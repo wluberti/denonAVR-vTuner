@@ -1,0 +1,4 @@
+flask
+denonavr
+python-dotenv
+requests

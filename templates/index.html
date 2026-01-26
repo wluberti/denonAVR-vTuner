@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Denon AVR Control</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header" style="display: flex; justify-content: space-between; align-items: center;">
+            <h1>DENON AVR</h1>
+            <button id="theme-toggle" class="btn-small" style="background: transparent; color: var(--text-primary); font-size: 1.2rem;">
+                ☀️/🌙
+            </button>
+        </div>
+
+        <div class="status-card">
+            <div class="status-info">
+                <div>Power: <span id="status-power">--</span></div>
+                <div>Source: <span id="status-source">--</span></div>
+            </div>
+            <div class="status-info" style="text-align: right;">
+                <div>Volume: <span id="status-volume">--</span></div>
+                <div class="loader" id="loader"></div>
+            </div>
+        </div>
+
+        <div class="control-group">
+            <div class="group-title">Search Stations</div>
+            <div style="display: flex; gap: 10px; margin-bottom: 16px;">
+                <input type="text" id="search-input" placeholder="Search for a station (e.g. 'Chill', 'BBC')"
+                       style="flex-grow: 1; padding: 12px; border-radius: 8px;">
+                <button class="btn btn-primary" id="search-btn" style="width: auto;">Search</button>
+            </div>
+
+            <table class="results-table" id="results-table" style="width: 100%; border-collapse: collapse; display: none;">
+                <thead>
+                    <tr style="text-align: left; color: var(--text-secondary);">
+                        <th style="padding: 10px;">Logo</th>
+                        <th style="padding: 10px; cursor: pointer" onclick="sortTable(0)">Station</th>
+                        <th style="padding: 10px; cursor: pointer" onclick="sortTable(1)">Country</th>
+                        <th style="padding: 10px; cursor: pointer" onclick="sortTable(2)">Bitrate</th>
+                        <th style="padding: 10px;">Action</th>
+                    </tr>
+                </thead>
+                <tbody id="results-body">
+                    <!-- Results here -->
+                </tbody>
+            </table>
+        </div>
+
+        <div class="control-group">
+            <div class="group-title">Favorites</div>
+            <div class="grid" id="favorites-grid">
+                <!-- Favorites will be loaded here -->
+                <div style="grid-column: 1 / -1; text-align: center; color: var(--text-secondary); padding: 20px;">
+                    No favorites saved. Search for a station and click ❤️ to save.
+                </div>
+            </div>
+        </div>
+
+
+    </div>
+    <!-- Info Modal -->
+    <div id="info-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <span class="close-modal" id="close-modal">&times;</span>
+            <div id="modal-header" style="display: flex; gap: 16px; align-items: center; margin-bottom: 20px;">
+                <img id="modal-logo" src="" style="width: 64px; height: 64px; object-fit: contain; display: none;">
+                <div>
+                    <h2 id="modal-title" style="margin: 0;">Station Name</h2>
+                    <a id="modal-homepage" href="#" target="_blank" style="color: var(--accent); font-size: 0.9rem;">Visit Website ↗</a>
+                </div>
+            </div>
+
+            <div class="modal-section">
+                <h3>Now Playing (Live)</h3>
+                <div id="modal-live-info" style="background: var(--input-bg); padding: 12px; border-radius: 8px; border: 1px solid var(--border-color);">
+                    Loading metadata...
+                </div>
+            </div>
+
+            <div class="modal-section">
+                <h3>Stream Details</h3>
+                <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.9rem;">
+                    <div><strong>Bitrate:</strong> <span id="modal-bitrate">-</span></div>
+                    <div><strong>Codec:</strong> <span id="modal-codec">-</span></div>
+                    <div><strong>Country:</strong> <span id="modal-country">-</span></div>
+                    <div><strong>Tags:</strong> <span id="modal-tags">-</span></div>
+                </div>
+            </div>
+
+            <div style="margin-top: 20px; text-align: right;">
+                 <button class="btn btn-primary" id="modal-play-btn">Play Station</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8800:5000"
+    volumes:
+      - .:/app
+    environment:
+      - DENON_IP=${DENON_IP}
+    env_file:
+      - .env

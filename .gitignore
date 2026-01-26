@@ -1,0 +1,13 @@
+.env
+.env.*
+.venv/
+vendor/
+node_modules/
+__pycache__/
+.pytest_cache/
+coverage/
+dist/
+build/
+artifacts/
+*.log
+.DS_Store
