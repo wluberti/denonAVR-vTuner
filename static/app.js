@@ -13,7 +13,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     updateStatus();
     loadFavorites();
-    // setInterval(updateStatus, 10000); // Poll removed to save connections
 
     // Bind Search
     const searchBtn = document.getElementById('search-btn');
@@ -41,7 +40,112 @@ document.addEventListener('DOMContentLoaded', () => {
             if (event.target == modal) modal.style.display = "none";
         }
     }
+    const volSlider = document.getElementById('volume-slider');
+    if (volSlider) {
+        // Debounce volume updates
+        let volTimeout;
+        volSlider.addEventListener('input', (e) => {
+            const absVol = parseFloat(e.target.value);
+            document.getElementById('volume-val').textContent = absVol; // Display 0-98
+            clearTimeout(volTimeout);
+            volTimeout = setTimeout(() => {
+                // Convert 0-98 back to -80 to +18 dB for API
+                const dbVol = absVol - 80;
+                setVolume(dbVol);
+            }, 300);
+        });
+    }
+
+    document.getElementById('mute-btn').addEventListener('click', async () => {
+        try {
+            const res = await fetch('/api/mute/toggle', {method: 'POST'});
+            const data = await res.json();
+            if (data.status === 'success') {
+                updateStatus(); // Will update icon
+            }
+        } catch (e) {
+            console.error(e);
+        }
+    });
 });
+
+async function setSource(source) {
+    try {
+        console.log('Setting source to:', source);
+        console.log('Stringified:', JSON.stringify({input: source}));
+        const res = await fetch('/api/input', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({input: source})
+        });
+        const data = await res.json();
+        if(data.status === 'success') {
+            updateStatus();
+        } else {
+            console.error('Set Source Error:', data);
+            alert('Failed to set source: ' + (data.error || 'Unknown error'));
+        }
+    } catch(e) {
+        console.error('Network Error setting source:', e);
+        alert('Network error while setting source. Check AVR connection.');
+    }
+}
+
+async function setVolume(vol) {
+    try {
+        await fetch('/api/volume', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({volume: parseFloat(vol)})
+        });
+        // Don't immediate updateStatus to avoid jumping slider
+    } catch(e) {
+        console.error(e);
+    }
+}
+
+function changeVolume(delta) {
+    const slider = document.getElementById('volume-slider');
+    let currentVal = parseFloat(slider.value);
+    let newVal = currentVal + delta;
+    if (newVal < 0) newVal = 0;
+    if (newVal > 98) newVal = 98;
+
+    // Update UI immediately
+    slider.value = newVal;
+    document.getElementById('volume-val').textContent = newVal;
+
+    // Send API req (Db = abs - 80)
+    setVolume(newVal - 80);
+}
+
+function playNextFavorite() {
+    if (!favoriteStations.length) return;
+    let idx = getCurrentFavoriteIndex();
+    idx = (idx + 1) % favoriteStations.length;
+    let station = favoriteStations[idx];
+    playUrl(station.url, station.name);
+}
+
+function playPrevFavorite() {
+    if (!favoriteStations.length) return;
+    let idx = getCurrentFavoriteIndex();
+    idx = (idx - 1 + favoriteStations.length) % favoriteStations.length;
+    let station = favoriteStations[idx];
+    playUrl(station.url, station.name);
+}
+
+function getCurrentFavoriteIndex() {
+    // Try to match current stream url if needed, but simple way is to match by name from UI?
+    // Actually, we don't track current URL in client state tightly.
+    // Let's just find the one that matches what we last requested?
+    // Or we can just start from 0 if unknown.
+    // Ideally we store `currentPlayingUrl`.
+    if (!currentPlayingUrl) return -1;
+    return favoriteStations.findIndex(f => f.url_resolved === currentPlayingUrl || f.url === currentPlayingUrl);
+}
+
+let currentPlayingUrl = null;
 
 let currentResults = [];
 let favoriteStations = [];
@@ -148,14 +252,12 @@ function renderFavorites() {
 
         // Delete button
         btn.querySelector('.delete-fav').onclick = async () => {
-            if (confirm(`Remove "${station.name}" from favorites?`)) {
-                await fetch('/api/favorites/delete', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({url: station.url})
-                });
-                loadFavorites();
-            }
+            await fetch('/api/favorites/delete', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({url: station.url})
+            });
+            loadFavorites();
         };
 
         btn.querySelector('.info-fav').onclick = () => showStationInfo(station);
@@ -179,7 +281,7 @@ async function addToFavorites(station) {
         const data = await res.json();
         if (data.status === 'success') {
             loadFavorites();
-            alert(`Saved "${station.name}" to favorites!`);
+            // alert(`Saved "${station.name}" to favorites!`); // Disabled per user request
         }
     } catch (e) {
         console.error("Failed to save favorite", e);
@@ -260,6 +362,7 @@ async function playUrl(url, name) {
         console.log("Play result:", data);
 
         if (data.status === 'success') {
+             currentPlayingUrl = url; // Track current
              // Refresh status soon
              setTimeout(updateStatus, 2000);
         } else {
@@ -318,7 +421,54 @@ async function updateStatus() {
 
         document.getElementById('status-power').textContent = data.power || '-';
         document.getElementById('status-source').textContent = data.source || '-';
-        document.getElementById('status-volume').textContent = data.volume !== undefined ? `${data.volume} dB` : '-';
+
+        // Update Mute Icon
+        const muteBtn = document.getElementById('mute-btn');
+        if (data.muted !== undefined) {
+            muteBtn.textContent = data.muted ? '🔇' : '🔊';
+            muteBtn.style.opacity = data.muted ? '0.5' : '1';
+        }
+
+        // Volume update (only if not dragging to avoid conflict, or simple update)
+        // We can check if active element is slider
+        if (document.activeElement.id !== 'volume-slider') {
+             // Convert API dB value to Absolute (0-98)
+             const dbVol = parseFloat(data.volume);
+             // Check if it's actually a number
+             if (!isNaN(dbVol)) {
+                 const absVol = Math.round((dbVol + 80) * 2) / 2; // Round to 0.5
+                 // Clamp between 0 and 98 just in case
+                 const displayVol = Math.max(0, Math.min(98, absVol));
+
+                 document.getElementById('status-volume').textContent = displayVol;
+                 document.getElementById('volume-val').textContent = displayVol;
+                 document.getElementById('volume-slider').value = displayVol;
+             } else {
+                 document.getElementById('status-volume').textContent = '-';
+             }
+        }
+
+        // Now Playing Logic
+        let nowPlaying = '-';
+        if (data.artist && data.title) {
+            nowPlaying = `${data.artist} - ${data.title}`;
+        } else if (data.station) {
+            nowPlaying = data.station;
+        } else if (data.name) {
+             nowPlaying = data.name; // Fallback to AVR display name
+        }
+
+        // We could create a dedicated 'Now Playing' element in the status card if requested.
+        // User asked: "Also show playing information on the webinterface"
+        // Let's reuse 'Source' or add a new line. The mock only has Power/Source/Volume.
+        // Let's append to Source for now or replace Source if it's NET/Radio.
+
+        const sourceDisplay = document.getElementById('status-source');
+        if (data.source === 'NET' || data.source === 'IRADIO') {
+             sourceDisplay.innerHTML = `<strong>${data.source}</strong><br><span style="font-size:0.9em; var(--accent);">${nowPlaying}</span>`;
+        } else {
+             sourceDisplay.textContent = data.source;
+        }
 
     } catch (e) {
         console.error("Failed to fetch status", e);

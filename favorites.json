@@ -1,8 +1,20 @@
 [
   {
-    "name": "Sublime",
-    "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/SUBLIME.mp3?dist=sublime_website",
-    "favicon": "",
+    "name": "Sublime Live",
+    "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/SUBLIME.mp3",
+    "favicon": "https://6nl7xj2ntppk.b-cdn.net/73cf20f2-a361-480b-bc2f-bec43b6a2bd5",
     "bitrate": 192
+  },
+  {
+    "name": "NPO 3FM",
+    "url": "https://icecast.omroep.nl/3fm-bb-mp3",
+    "favicon": "https://www.npo3fm.nl/apple-touch-icon.png",
+    "bitrate": 192
+  },
+  {
+    "name": "Radio Veronica Live",
+    "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/VERONICA.mp3",
+    "favicon": "",
+    "bitrate": 128
   }
 ]

@@ -10,6 +10,17 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+    <!-- Fixed Volume Bar (Top) -->
+    <div id="volume-bar" class="volume-bar">
+        <div class="volume-container">
+            <button id="mute-btn" class="btn-small" style="background:transparent; font-size:1.5rem;">🔊</button>
+            <button class="btn-small volume-btn" onclick="changeVolume(-1)">-</button>
+            <input type="range" id="volume-slider" min="0" max="98" step="0.5" value="40" style="flex-grow:1; margin:0 8px;">
+            <button class="btn-small volume-btn" onclick="changeVolume(1)">+</button>
+            <span id="volume-val" style="min-width: 40px; text-align: right;">40</span>
+        </div>
+    </div>
+
     <div class="container">
         <div class="header" style="display: flex; justify-content: space-between; align-items: center;">
             <h1>DENON AVR</h1>
@@ -18,14 +29,29 @@
             </button>
         </div>
 
-        <div class="status-card">
-            <div class="status-info">
-                <div>Power: <span id="status-power">--</span></div>
-                <div>Source: <span id="status-source">--</span></div>
+        <!-- Input Selectors -->
+        <div class="control-group">
+            <div class="group-title">Input Source</div>
+            <div class="grid" style="grid-template-columns: repeat(3, 1fr);">
+                <button class="btn" onclick="setSource('CBL/SAT')">📺 TV Audio</button>
+                <button class="btn" onclick="setSource('CD')">📡 XS4ALL STB</button>
+                <button class="btn" onclick="setSource('NETWORK')">🌍 Radio</button>
             </div>
-            <div class="status-info" style="text-align: right;">
-                <div>Volume: <span id="status-volume">--</span></div>
-                <div class="loader" id="loader"></div>
+        </div>
+
+        <div class="control-group">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <div class="group-title" style="margin-bottom: 0;">Favorites</div>
+                <div style="display: flex; gap: 8px;">
+                    <button class="btn-small" onclick="playPrevFavorite()">⏮ Prev</button>
+                    <button class="btn-small" onclick="playNextFavorite()">Next ⏭</button>
+                </div>
+            </div>
+            <div class="grid" id="favorites-grid">
+                <!-- Favorites will be loaded here -->
+                <div style="grid-column: 1 / -1; text-align: center; color: var(--text-secondary); padding: 20px;">
+                    No favorites saved. Search for a station and click ❤️ to save.
+                </div>
             </div>
         </div>
 
@@ -52,19 +78,6 @@
                 </tbody>
             </table>
         </div>
-
-        <div class="control-group">
-            <div class="group-title">Favorites</div>
-            <div class="grid" id="favorites-grid">
-                <!-- Favorites will be loaded here -->
-                <div style="grid-column: 1 / -1; text-align: center; color: var(--text-secondary); padding: 20px;">
-                    No favorites saved. Search for a station and click ❤️ to save.
-                </div>
-            </div>
-        </div>
-
-
-    </div>
     <!-- Info Modal -->
     <div id="info-modal" class="modal" style="display: none;">
         <div class="modal-content">

@@ -5,6 +5,7 @@ import requests
 import socket
 import os
 import asyncio
+import telnetlib
 import html
 from dotenv import load_dotenv
 
@@ -20,10 +21,6 @@ def log_debug(msg):
     if DEBUG:
         print(f"[DEBUG] {msg}", file=sys.stderr)
 
-def get_denon_receiver():
-    """Synchronously get a denon receiver instance."""
-    # Note: denonavr is async, but we can run the init in a loop if needed,
-    # or just use it synchronously if possible.
     # The library is primarily async. We'll use asyncio.run for simple commands.
     return denonavr.DenonAVR(DENON_IP)
 
@@ -37,35 +34,13 @@ async def async_get_status():
         "source": d.input_func,
         "volume": d.volume,
         "muted": d.muted,
-        "name": d.name
+        "name": d.name,
+        "artist": getattr(d, 'artist', ''),
+        "title": getattr(d, 'title', ''),
+        "station": getattr(d, 'band', ''), # 'band' often holds station name in DenonAVR lib
+        "input_list": d.input_func_list
     }
 
-async def async_play_favorite(favorite_id):
-    """
-    Simulates pressing a favorite button?
-    DenonAVR library might expose this via direct command or input selection.
-    If 'Favorites' are inputs, we select them.
-    """
-    d = denonavr.DenonAVR(DENON_IP)
-    await d.async_setup()
-
-    # Check if we can select 'Favorites' as a source
-    # Or sending specific command.
-    # The library allows sending arbitrary commands via telnet if needed,
-    # but let's try standard input selection first.
-
-    # Usually "Favorite 1" -> "FAVORITE1" or similar command.
-    # We might need to send raw telnet command if the library doesn't support specific favorite selection easily.
-    # Command: "FV 01" for Favorite 1? Or "ZNFAVORITE1" ?
-    # Let's try sending raw command for Favorites as it's most reliable for older AVRs.
-    # X4000: "ZMFAVORITE1" (Main Zone), "Z2FAVORITE1" (Zone 2)
-
-    # However, denonavr library uses http/telnet.
-    # Let's assume we want to trigger Quick Selects or Favorites.
-    # Quick Select: "MSQUICK1", "MSQUICK2", etc.
-    # Favorites call: "ZM" + "FAVORITE" + id
-
-    # We will try to execute raw telnet command via the library if feasible,
     # otherwise we might just open a raw telnet connection for simplicity in this function.
     pass
 
@@ -81,6 +56,28 @@ def status():
     try:
         data = asyncio.run(async_get_status())
         return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/debug_inputs')
+def debug_inputs():
+    """Debug endpoint to show what inputs the library sees"""
+    if not DENON_IP:
+        return jsonify({"error": "DENON_IP not configured"}), 500
+
+    try:
+        d = denonavr.DenonAVR(DENON_IP)
+        asyncio.run(d.async_setup())
+        asyncio.run(d.async_update())
+        return jsonify({
+            "current_input": d.input_func,
+            "available_inputs": d.input_func_list,
+            "all_attributes": {
+                "name": d.name,
+                "power": d.power,
+                "volume": d.volume
+            }
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -132,8 +129,139 @@ def delete_favorite():
     save_favorites(favs)
     return jsonify({"status": "success", "favorites": favs})
 
-# Removed old direct telnet routes as we are pivoting to App Favorites via DLNA
+@app.route('/api/volume', methods=['POST'])
+def set_volume():
+    data = request.json
+    try:
+        val = data.get('volume')
+        # DenonAVR accepts float. -80 to +18 usually.
+        # User might send absolute float.
+        if val is not None:
+            log_debug(f"Setting volume to {val}")
+            d = denonavr.DenonAVR(DENON_IP)
+            asyncio.run(d.async_setup())
+            asyncio.run(d.async_set_volume(float(val)))
+            return jsonify({"status": "success", "volume": val})
+        return jsonify({"error": "Missing volume"}), 400
+    except Exception as e:
+        log_debug(f"Error setting volume: {e}")
+        return jsonify({"error": str(e)}), 500
 
+@app.route('/api/input', methods=['POST'])
+def set_input():
+    data = request.json
+    try:
+        source = data.get('input')
+        if source:
+            # Map common names/user labels to Denon internal codes
+            INPUT_MAPPING = {
+                "TV": "TV",
+                "TV AUDIO": "TV",
+                "STB": "CBL/SAT",
+                "SAT/CBL": "CBL/SAT",
+                "SATCBL": "CBL/SAT",
+                "CBL/SAT": "CBL/SAT",
+                "XS4ALL STB": "CBL/SAT",
+                "CD": "CD",
+                "NET": "NET",
+                "RADIO": "NET",
+                "TUNER": "TUNER",
+                "DVD": "DVD",
+                "BD": "BD",
+                "GAME": "GAME",
+                "AUX1": "AUX1",
+                "AUX2": "AUX2",
+                "PHONO": "PHONO",
+                "MPLAY": "MPLAY",
+                "USB/IPOD": "USB/IPOD"
+            }
+
+            clean_source = source.strip()
+            final_source = INPUT_MAPPING.get(clean_source, clean_source)
+
+            log_debug(f"Input selection requested: {source} -> {final_source}")
+
+            # Try HTTP API first (most reliable for Denon AVRs)
+            http_success = False
+            try:
+                log_debug(f"Attempting HTTP API method...")
+                # The AVR's HTTP API expects commands like SICD, SISATCBL, etc.
+                # Remove slashes for the HTTP command
+                http_code = final_source.replace("/", "").replace(" ", "")
+                url = f"http://{DENON_IP}/goform/formiPhoneAppDirect.xml?SI{http_code}"
+                log_debug(f"HTTP API URL: {url}")
+                resp = requests.get(url, timeout=2)
+                if resp.status_code == 200:
+                    http_success = True
+                    log_debug(f"Successfully set input via HTTP API")
+                else:
+                    log_debug(f"HTTP API returned status {resp.status_code}")
+            except Exception as http_err:
+                log_debug(f"HTTP API failed: {http_err}")
+
+            # If HTTP failed, try denonavr library
+            if not http_success:
+                library_success = False
+                lib_err = None
+                try:
+                    log_debug(f"Attempting denonavr library method...")
+                    d = denonavr.DenonAVR(DENON_IP)
+                    asyncio.run(d.async_setup())
+                    log_debug(f"Available inputs: {d.input_func_list}")
+                    asyncio.run(d.async_set_input_func(final_source))
+                    library_success = True
+                    log_debug(f"Successfully set input via library")
+                except Exception as e:
+                    lib_err = e
+                    log_debug(f"Library method failed: {lib_err}")
+
+
+            # If both library and HTTP failed, try Telnet as last resort
+            if not http_success and not library_success:
+                try:
+                    log_debug(f"Attempting Telnet fallback to {DENON_IP}:23")
+                    with telnetlib.Telnet(DENON_IP, 23, timeout=3) as tn:
+                        cmd = f"SI{final_source}\r".encode('ascii')
+                        log_debug(f"Sending Telnet command: {cmd}")
+                        tn.write(cmd)
+                        # Try to read response
+                        import time
+                        time.sleep(0.1)
+                        try:
+                            response = tn.read_very_eager().decode('ascii', errors='ignore')
+                            log_debug(f"Telnet response: {response}")
+                        except:
+                            pass
+                    log_debug(f"Telnet command sent successfully")
+                except Exception as telnet_err:
+                    log_debug(f"Telnet method also failed: {telnet_err}")
+                    return jsonify({"error": f"All methods failed. HTTP, Library: {lib_err}, Telnet: {telnet_err}"}), 500
+
+            # Determine which method succeeded
+            if http_success:
+                method = "http"
+            elif library_success:
+                method = "library"
+            else:
+                method = "telnet"
+
+            return jsonify({"status": "success", "input": final_source, "method": method})
+        return jsonify({"error": "Missing input"}), 400
+    except Exception as e:
+        log_debug(f"Error setting input: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/mute/toggle', methods=['POST'])
+def toggle_mute():
+    try:
+        log_debug("Toggling mute")
+        d = denonavr.DenonAVR(DENON_IP)
+        asyncio.run(d.async_setup())
+        asyncio.run(d.async_mute_volume(not d.muted))
+        return jsonify({"status": "success", "muted": not d.muted})
+    except Exception as e:
+        log_debug(f"Error toggling mute: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/stream.mp3')
 def stream_proxy():
@@ -148,11 +276,15 @@ def stream_proxy():
     try:
         log_debug(f"Streaming proxy requested for: {url}")
         # Stream the content with ICY metadata request
-        headers = {'Icy-MetaData': '1'}
-        req = requests.get(url, stream=True, timeout=5, headers=headers)
+        # Stream the content WITHOUT ICY metadata request to avoid interleaved data
+        # headers = {'Icy-MetaData': '1'}
+        # CAUTION: Requesting Icy-MetaData=1 causes the server to insert metadata bytes
+        # into the MP3 stream. The AVR doesn't expect this and plays them as noise (pop/jitter).
+        req = requests.get(url, stream=True, timeout=10)
 
         def generate():
-            for chunk in req.iter_content(chunk_size=4096):
+            # Increase chunk size to 32KB for better buffering
+            for chunk in req.iter_content(chunk_size=32768):
                 yield chunk
 
         # Force audio/mpeg for compatibility

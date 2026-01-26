@@ -143,6 +143,57 @@ body {
     opacity: 0.9;
 }
 
+/* Light Theme overrides for generic buttons */
+body.light-theme .btn {
+    border-color: #e0e0e0;
+    color: #000;
+}
+
+body.light-theme .btn:hover {
+    background: #e0e0e0;
+    /* Darker grey for hover */
+    border-color: #999;
+}
+
+/* Light Theme - Pagination / Small Buttons */
+body.light-theme .btn-small {
+    background: var(--accent);
+    /* Keep accent (purple) */
+    color: #fff;
+    /* White text on purple */
+}
+
+body.light-theme .btn-small:hover {
+    filter: brightness(0.9);
+}
+
+/* Volume Button Specifics */
+.volume-btn {
+    font-size: 1.5rem;
+    padding: 0 12px;
+    margin: 0 8px;
+    background: var(--card-bg);
+    /* Use card bg instead of accent for better contrast with text if configured */
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 40px;
+    width: 40px;
+}
+
+/* Light Theme High Contrast Overrides */
+body.light-theme .volume-btn {
+    background: #e0e0e0;
+    color: #000;
+    border-color: #999;
+}
+
+body.light-theme .volume-btn:hover {
+    background: #d0d0d0;
+}
+
 input {
     background: var(--input-bg) !important;
     color: var(--text-primary) !important;
@@ -175,4 +226,31 @@ input {
     100% {
         transform: rotate(360deg);
     }
+}
+
+.volume-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: var(--card-bg);
+    border-bottom: 1px solid var(--border-color);
+    padding: 12px;
+    z-index: 1000;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+    display: flex;
+    justify-content: center;
+}
+
+.volume-container {
+    width: 100%;
+    max-width: 600px;
+    display: flex;
+    align-items: center;
+}
+
+/* Adjust container to start below volume bar */
+.container {
+    padding-top: 80px;
+    padding-bottom: 20px;
 }
