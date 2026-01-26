@@ -16,5 +16,17 @@
     "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/VERONICA.mp3",
     "favicon": "",
     "bitrate": 128
+  },
+  {
+    "name": "Classicnl",
+    "url": "https://classic.nl/streams/?s=main",
+    "favicon": "https://www.classic.nl/favicon.ico",
+    "bitrate": 192
+  },
+  {
+    "name": "JazzRadio.fr Blues",
+    "url": "https://jazzblues.ice.infomaniak.ch/jazzblues-high.mp3",
+    "favicon": "https://www.jazzradio.fr/media/radio/thumb/100x100_blues.png",
+    "bitrate": 128
   }
 ]

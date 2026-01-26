@@ -157,8 +157,8 @@ def set_volume():
         if val is not None:
             log_debug(f"Setting volume to {val}")
             # Convert to Denon format: -80 to +18 becomes 00 to 98
-            # Example: -30 dB = MV50
-            denon_vol = int((float(val) + 80) * 0.5)
+            # Example: -30 dB = MV50 (Absolute 50)
+            denon_vol = int(float(val) + 80)
             command = f"MV{denon_vol:02d}"
             if send_avr_command(command):
                 return jsonify({"status": "success", "volume": val})
