@@ -14,6 +14,11 @@ app = Flask(__name__)
 
 # Configuration
 DENON_IP = os.getenv("DENON_IP")
+DEBUG = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
+
+def log_debug(msg):
+    if DEBUG:
+        print(f"[DEBUG] {msg}", file=sys.stderr)
 
 def get_denon_receiver():
     """Synchronously get a denon receiver instance."""
@@ -141,9 +146,10 @@ def stream_proxy():
         return "Missing url", 400
 
     try:
-        print(f"[DEBUG] Streaming proxy requested for: {url}", file=sys.stderr)
-        # Stream the content
-        req = requests.get(url, stream=True, timeout=5)
+        log_debug(f"Streaming proxy requested for: {url}")
+        # Stream the content with ICY metadata request
+        headers = {'Icy-MetaData': '1'}
+        req = requests.get(url, stream=True, timeout=5, headers=headers)
 
         def generate():
             for chunk in req.iter_content(chunk_size=4096):
@@ -162,7 +168,7 @@ def stream_proxy():
 
         return resp
     except Exception as e:
-        print(f"Proxy error: {e}", file=sys.stderr)
+        log_debug(f"Proxy error: {e}")
         return str(e), 500
 
 def get_local_ip():
@@ -346,11 +352,13 @@ def play_url():
         return jsonify({"error": "DENON_IP not configured"}), 500
 
     stream_url = request.args.get('url')
+    station_name = request.args.get('name', 'vTuner Stream')
+
     if not stream_url:
         return jsonify({"error": "Missing 'url' parameter"}), 400
 
     try:
-        print(f"[DEBUG] play_url called with url={stream_url}", file=sys.stderr)
+        log_debug(f"play_url called with url={stream_url}")
 
         # Discovery Strategy:
         # 1. Try common ports/paths first (Fast path)
@@ -362,16 +370,16 @@ def play_url():
         # Fast path 2: Port 80
 
         # Let's try SSDP immediately since 8080 failed
-        print(f"[DEBUG] Discovering UPnP services for {DENON_IP}...", file=sys.stderr)
+        log_debug(f"Discovering UPnP services for {DENON_IP}...")
         location = discover_upnp_location()
         if location:
-            print(f"[DEBUG] Found Device Description at: {location}", file=sys.stderr)
+            log_debug(f"Found Device Description at: {location}")
             control_url = get_control_url(location)
-            print(f"[DEBUG] Discovered Control URL: {control_url}", file=sys.stderr)
+            log_debug(f"Discovered Control URL: {control_url}")
 
         if not control_url:
             # Fallback: Manual Port/Path Scan
-            print("[DEBUG] SSDP failed or yielded no result. Starting manual scan...", file=sys.stderr)
+            log_debug("SSDP failed or yielded no result. Starting manual scan...")
 
             # Common ports for Denon/Marantz UPnP
             common_ports = [8080, 80, 55000, 38067]
@@ -390,26 +398,26 @@ def play_url():
                 for path in desc_paths:
                     try:
                         test_url = f"http://{DENON_IP}:{port}{path}"
-                        print(f"[DEBUG] Scanning {test_url} ...", file=sys.stderr)
+                        log_debug(f"Scanning {test_url} ...")
                         # Low timeout for scan
                         r = requests.get(test_url, timeout=1)
                         if r.status_code == 200:
-                            print(f"[DEBUG] Found description at {test_url}", file=sys.stderr)
+                            log_debug(f"Found description at {test_url}")
                             control_url = get_control_url(test_url)
                             if control_url:
                                 break
                     except Exception as e:
-                        print(f"[DEBUG] Scan error for {test_url}: {e}", file=sys.stderr)
+                        log_debug(f"Scan error for {test_url}: {e}")
                         pass
                 if control_url:
                     break
 
             # Step 2: Only if specific scan failed, try blind POST to standard 8080 control path
             if not control_url:
-                print("[DEBUG] Manual scan failed. Trying fallback to port 8080 direct control...", file=sys.stderr)
+                log_debug("Manual scan failed. Trying fallback to port 8080 direct control...")
                 control_url = f"http://{DENON_IP}:8080/AVTransport/control"
 
-        print(f"[DEBUG] Using Control URL: {control_url}", file=sys.stderr)
+        log_debug(f"Using Control URL: {control_url}")
 
         # ... DLNA Logic ...
 
@@ -422,7 +430,7 @@ def play_url():
                 local_ip = get_local_ip()
 
             host_port = os.getenv("HOST_PORT", "5000")
-            print(f"[DEBUG] Detected Local IP: {local_ip}, Port: {host_port}", file=sys.stderr)
+            log_debug(f"Detected Local IP: {local_ip}, Port: {host_port}")
 
             # If running in Docker, get_local_ip might return the container IP (172.x).
             # The AVR cannot reach 172.x. We need the Host's LAN IP.
@@ -432,14 +440,14 @@ def play_url():
             # But the user is mapping 5000:5000.
 
             proxy_url = f"http://{local_ip}:{host_port}/stream.mp3?url={stream_url}"
-            print(f"[DEBUG] Rewriting HTTPS url to HTTP Proxy: {proxy_url}", file=sys.stderr)
+            log_debug(f"Rewriting HTTPS url to HTTP Proxy: {proxy_url}")
             stream_url = proxy_url
 
         # 1. Construct DIDL-Lite Metadata
         # This is critical for Denon AVRs to know what codec/protocol to expect.
         didl_lite = f"""<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">
 <item id="0" parentID="0" restricted="1">
-<dc:title>vTuner Stream</dc:title>
+<dc:title>{html.escape(station_name)}</dc:title>
 <upnp:class>object.item.audioItem.audioBroadcast</upnp:class>
 <res protocolInfo="http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000">{stream_url}</res>
 </item>
@@ -465,9 +473,9 @@ def play_url():
         }
 
         # Action 1: Set URI
-        print(f"[DEBUG] Sending SetAVTransportURI to {control_url}...", file=sys.stderr)
+        log_debug(f"Sending SetAVTransportURI to {control_url}...")
         resp1 = requests.post(control_url, data=soap_body, headers=headers, timeout=5)
-        print(f"[DEBUG] SetAVTransportURI Response: {resp1.status_code} {resp1.text}", file=sys.stderr)
+        log_debug(f"SetAVTransportURI Response: {resp1.status_code} {resp1.text}")
 
         # Action 2: Play
         play_body = """<?xml version="1.0" encoding="utf-8"?>
@@ -481,9 +489,9 @@ def play_url():
         </s:Envelope>"""
 
         headers['SOAPAction'] = '"urn:schemas-upnp-org:service:AVTransport:1#Play"'
-        print(f"[DEBUG] Sending Play to {control_url}...", file=sys.stderr)
+        log_debug(f"Sending Play to {control_url}...")
         resp2 = requests.post(control_url, data=play_body, headers=headers, timeout=5)
-        print(f"[DEBUG] Play Response: {resp2.status_code} {resp2.text}", file=sys.stderr)
+        log_debug(f"Play Response: {resp2.status_code} {resp2.text}")
 
         # Debug: Check actual status via Denon Web Interface
         # The user mentioned http://IP/NetAudio/index.html
@@ -491,16 +499,17 @@ def play_url():
         try:
             status_url = f"http://{DENON_IP}/goform/formNetAudio_StatusXml.xml"
             r = requests.get(status_url, timeout=2)
-            print(f"[DEBUG] AVR NetAudio Status: {r.text}", file=sys.stderr)
+            log_debug(f"AVR NetAudio Status: {r.text}")
         except Exception as e:
-            print(f"[DEBUG] Could not fetch NetAudio Status: {e}", file=sys.stderr)
+            log_debug(f"Could not fetch NetAudio Status: {e}")
 
         return jsonify({"status": "success", "played": stream_url, "control_url": control_url})
 
     except Exception as e:
-        print(f"[DEBUG] Error playing URL: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc()
+        log_debug(f"Error playing URL: {e}")
+        if DEBUG:
+            import traceback
+            traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':

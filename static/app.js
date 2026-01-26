@@ -72,7 +72,7 @@ async function showStationInfo(station) {
     document.getElementById('modal-tags').textContent = station.tags || '-';
 
     playBtn.onclick = () => {
-        playUrl(station.url_resolved || station.url);
+        playUrl(station.url_resolved || station.url, station.name);
         modal.style.display = "none";
     };
 
@@ -143,7 +143,7 @@ function renderFavorites() {
         // Click main area to play
         btn.onclick = (e) => {
             if (e.target.closest('.delete-fav') || e.target.closest('.info-fav')) return;
-            playUrl(station.url);
+            playUrl(station.url, station.name);
         };
 
         // Delete button
@@ -231,7 +231,7 @@ function renderResults(data) {
             <td style="padding: 12px; color: var(--text-secondary);">${station.countrycode || ''}</td>
             <td style="padding: 12px; color: var(--text-secondary);">${station.bitrate}k</td>
             <td style="padding: 12px; display:flex; gap:8px;">
-                <button class="btn-small" onclick="playUrl('${station.url_resolved}')" title="Play">
+                <button class="btn-small" onclick="playUrl('${station.url_resolved}', '${station.name.replace(/'/g, "\\'")}')" title="Play">
                    ▶
                 </button>
                 <button class="btn-small" onclick="showStationInfo(currentResults[${index}])" title="Info" style="background:var(--card-bg); border:1px solid var(--border-color); color:var(--text-primary);">
@@ -246,13 +246,16 @@ function renderResults(data) {
     });
 }
 
-async function playUrl(url) {
+async function playUrl(url, name) {
     // Show instant feedback
     const originalText = document.querySelector('.header h1').innerText;
-    document.querySelector('.header h1').innerText = "Requesting Stream...";
+    document.querySelector('.header h1').innerText = "Requesting " + (name || "Stream") + "...";
 
     try {
-        const res = await fetch(`/api/play_url?url=${encodeURIComponent(url)}`);
+        let apiUrl = `/api/play_url?url=${encodeURIComponent(url)}`;
+        if (name) apiUrl += `&name=${encodeURIComponent(name)}`;
+
+        const res = await fetch(apiUrl);
         const data = await res.json();
         console.log("Play result:", data);
 
