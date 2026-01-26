@@ -1,12 +1,11 @@
 from flask import Flask, render_template, jsonify, request
 import sys
-import denonavr
 import requests
-import socket
 import os
-import asyncio
-import telnetlib
+import socket
 import html
+import json
+import xml.etree.ElementTree as ET
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -21,28 +20,67 @@ def log_debug(msg):
     if DEBUG:
         print(f"[DEBUG] {msg}", file=sys.stderr)
 
-    # The library is primarily async. We'll use asyncio.run for simple commands.
-    return denonavr.DenonAVR(DENON_IP)
+# State persistence
+LAST_PLAYED_FILE = os.path.join(os.path.dirname(__file__), "last_played.json")
 
-async def async_get_status():
-    d = denonavr.DenonAVR(DENON_IP)
-    await d.async_setup()
-    await d.async_update()
-    return {
-        "power": d.power,
-        "state": d.state,
-        "source": d.input_func,
-        "volume": d.volume,
-        "muted": d.muted,
-        "name": d.name,
-        "artist": getattr(d, 'artist', ''),
-        "title": getattr(d, 'title', ''),
-        "station": getattr(d, 'band', ''), # 'band' often holds station name in DenonAVR lib
-        "input_list": d.input_func_list
-    }
+def save_last_played(url, name):
+    try:
+        data = {"url": url, "name": name}
+        with open(LAST_PLAYED_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        log_debug(f"Failed to save last played: {e}")
 
-    # otherwise we might just open a raw telnet connection for simplicity in this function.
-    pass
+def get_last_played():
+    try:
+        if os.path.exists(LAST_PLAYED_FILE):
+             with open(LAST_PLAYED_FILE, "r") as f:
+                 return json.load(f)
+    except Exception as e:
+        log_debug(f"Failed to load last played: {e}")
+    return None
+
+def send_avr_command(command):
+    """Send command to AVR via HTTP API"""
+    try:
+        url = f"http://{DENON_IP}/goform/formiPhoneAppDirect.xml?{command}"
+        log_debug(f"Sending command: {url}")
+        resp = requests.get(url, timeout=2)
+        return resp.status_code == 200
+    except Exception as e:
+        log_debug(f"Command failed: {e}")
+        return False
+
+def get_avr_status():
+    """Get AVR status via HTTP API"""
+    try:
+        url = f"http://{DENON_IP}/goform/formMainZone_MainZoneXml.xml"
+        log_debug(f"Getting status from: {url}")
+        resp = requests.get(url, timeout=2)
+
+        if resp.status_code != 200:
+            return None
+
+        # Parse XML response
+        root = ET.fromstring(resp.content)
+
+        # Extract values from XML
+        power = root.find('.//Power/value')
+        volume = root.find('.//MasterVolume/value')
+        muted = root.find('.//Mute/value')
+        source = root.find('.//InputFuncSelect/value')
+
+        return {
+            "power": power.text if power is not None else "UNKNOWN",
+            "state": "on" if (power is not None and power.text == "ON") else "off",
+            "source": source.text if source is not None else "UNKNOWN",
+            "volume": float(volume.text) if volume is not None else 0,
+            "muted": (muted.text.lower() == "on") if muted is not None else False,
+            "name": "denon"
+        }
+    except Exception as e:
+        log_debug(f"Failed to get status: {e}")
+        return None
 
 @app.route('/')
 def index():
@@ -54,32 +92,14 @@ def status():
         return jsonify({"error": "DENON_IP not configured"}), 500
 
     try:
-        data = asyncio.run(async_get_status())
+        data = get_avr_status()
+        if data is None:
+            return jsonify({"error": "Failed to get AVR status"}), 500
         return jsonify(data)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/debug_inputs')
-def debug_inputs():
-    """Debug endpoint to show what inputs the library sees"""
-    if not DENON_IP:
-        return jsonify({"error": "DENON_IP not configured"}), 500
 
-    try:
-        d = denonavr.DenonAVR(DENON_IP)
-        asyncio.run(d.async_setup())
-        asyncio.run(d.async_update())
-        return jsonify({
-            "current_input": d.input_func,
-            "available_inputs": d.input_func_list,
-            "all_attributes": {
-                "name": d.name,
-                "power": d.power,
-                "volume": d.volume
-            }
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 import json
 
@@ -134,14 +154,15 @@ def set_volume():
     data = request.json
     try:
         val = data.get('volume')
-        # DenonAVR accepts float. -80 to +18 usually.
-        # User might send absolute float.
         if val is not None:
             log_debug(f"Setting volume to {val}")
-            d = denonavr.DenonAVR(DENON_IP)
-            asyncio.run(d.async_setup())
-            asyncio.run(d.async_set_volume(float(val)))
-            return jsonify({"status": "success", "volume": val})
+            # Convert to Denon format: -80 to +18 becomes 00 to 98
+            # Example: -30 dB = MV50
+            denon_vol = int((float(val) + 80) * 0.5)
+            command = f"MV{denon_vol:02d}"
+            if send_avr_command(command):
+                return jsonify({"status": "success", "volume": val})
+            return jsonify({"error": "Failed to set volume"}), 500
         return jsonify({"error": "Missing volume"}), 400
     except Exception as e:
         log_debug(f"Error setting volume: {e}")
@@ -155,25 +176,29 @@ def set_input():
         if source:
             # Map common names/user labels to Denon internal codes
             INPUT_MAPPING = {
-                "TV": "TV",
-                "TV AUDIO": "TV",
-                "STB": "CBL/SAT",
-                "SAT/CBL": "CBL/SAT",
-                "SATCBL": "CBL/SAT",
-                "CBL/SAT": "CBL/SAT",
-                "XS4ALL STB": "CBL/SAT",
-                "CD": "CD",
-                "NET": "NET",
-                "RADIO": "NET",
-                "TUNER": "TUNER",
-                "DVD": "DVD",
-                "BD": "BD",
-                "GAME": "GAME",
-                "AUX1": "AUX1",
-                "AUX2": "AUX2",
-                "PHONO": "PHONO",
-                "MPLAY": "MPLAY",
-                "USB/IPOD": "USB/IPOD"
+                # Active Inputs (Used in UI)
+                "CBL/SAT": "SAT/CBL",   # TV Audio (Button sends CBL/SAT, requires SAT/CBL command)
+                "NETWORK": "IRADIO",    # Radio (Button sends NETWORK, requires IRADIO command)
+                "CD": "CD",             # XS4ALL STB (Button sends CD)
+
+                # Unused Inputs (Commented out)
+                # "TV": "TV",
+                # "TV AUDIO": "TV",
+                # "STB": "SAT/CBL",
+                # "SAT/CBL": "SAT/CBL",
+                # "SATCBL": "SAT/CBL",
+                # "XS4ALL STB": "SAT/CBL",
+                # "NET": "IRADIO",
+                # "RADIO": "IRADIO",
+                # "TUNER": "TUNER",
+                # "DVD": "DVD",
+                # "BD": "BD",
+                # "GAME": "GAME",
+                # "AUX1": "AUX1",
+                # "AUX2": "AUX2",
+                # "PHONO": "PHONO",
+                # "MPLAY": "MPLAY",
+                # "USB/IPOD": "USB/IPOD"
             }
 
             clean_source = source.strip()
@@ -186,8 +211,12 @@ def set_input():
             try:
                 log_debug(f"Attempting HTTP API method...")
                 # The AVR's HTTP API expects commands like SICD, SISATCBL, etc.
-                # Remove slashes for the HTTP command
-                http_code = final_source.replace("/", "").replace(" ", "")
+                # However, SAT/CBL requires the slash: SISAT/CBL
+                http_code = final_source.replace(" ", "")
+                # Only strip slashes if NOT SAT/CBL (just to be safe, though most modern Denons accept encoded slashes)
+                if "SAT/CBL" not in http_code:
+                    http_code = http_code.replace("/", "")
+
                 url = f"http://{DENON_IP}/goform/formiPhoneAppDirect.xml?SI{http_code}"
                 log_debug(f"HTTP API URL: {url}")
                 resp = requests.get(url, timeout=2)
@@ -199,53 +228,14 @@ def set_input():
             except Exception as http_err:
                 log_debug(f"HTTP API failed: {http_err}")
 
-            # If HTTP failed, try denonavr library
+
+
+
+
             if not http_success:
-                library_success = False
-                lib_err = None
-                try:
-                    log_debug(f"Attempting denonavr library method...")
-                    d = denonavr.DenonAVR(DENON_IP)
-                    asyncio.run(d.async_setup())
-                    log_debug(f"Available inputs: {d.input_func_list}")
-                    asyncio.run(d.async_set_input_func(final_source))
-                    library_success = True
-                    log_debug(f"Successfully set input via library")
-                except Exception as e:
-                    lib_err = e
-                    log_debug(f"Library method failed: {lib_err}")
+                return jsonify({"error": "Failed to set input via HTTP API"}), 500
 
-
-            # If both library and HTTP failed, try Telnet as last resort
-            if not http_success and not library_success:
-                try:
-                    log_debug(f"Attempting Telnet fallback to {DENON_IP}:23")
-                    with telnetlib.Telnet(DENON_IP, 23, timeout=3) as tn:
-                        cmd = f"SI{final_source}\r".encode('ascii')
-                        log_debug(f"Sending Telnet command: {cmd}")
-                        tn.write(cmd)
-                        # Try to read response
-                        import time
-                        time.sleep(0.1)
-                        try:
-                            response = tn.read_very_eager().decode('ascii', errors='ignore')
-                            log_debug(f"Telnet response: {response}")
-                        except:
-                            pass
-                    log_debug(f"Telnet command sent successfully")
-                except Exception as telnet_err:
-                    log_debug(f"Telnet method also failed: {telnet_err}")
-                    return jsonify({"error": f"All methods failed. HTTP, Library: {lib_err}, Telnet: {telnet_err}"}), 500
-
-            # Determine which method succeeded
-            if http_success:
-                method = "http"
-            elif library_success:
-                method = "library"
-            else:
-                method = "telnet"
-
-            return jsonify({"status": "success", "input": final_source, "method": method})
+            return jsonify({"status": "success", "input": final_source, "method": "http"})
         return jsonify({"error": "Missing input"}), 400
     except Exception as e:
         log_debug(f"Error setting input: {e}")
@@ -255,10 +245,17 @@ def set_input():
 def toggle_mute():
     try:
         log_debug("Toggling mute")
-        d = denonavr.DenonAVR(DENON_IP)
-        asyncio.run(d.async_setup())
-        asyncio.run(d.async_mute_volume(not d.muted))
-        return jsonify({"status": "success", "muted": not d.muted})
+        # Get current status to determine mute state
+        status = get_avr_status()
+        if status is None:
+            return jsonify({"error": "Failed to get AVR status"}), 500
+
+        current_muted = status.get("muted", False)
+        command = "MUOFF" if current_muted else "MUON"
+
+        if send_avr_command(command):
+            return jsonify({"status": "success", "muted": not current_muted})
+        return jsonify({"error": "Failed to toggle mute"}), 500
     except Exception as e:
         log_debug(f"Error toggling mute: {e}")
         return jsonify({"error": str(e)}), 500
@@ -478,6 +475,13 @@ def search_stations():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/last_played')
+def api_last_played():
+    data = get_last_played()
+    if data:
+        return jsonify(data)
+    return jsonify({}), 404
+
 @app.route('/api/play_url')
 def play_url():
     if not DENON_IP:
@@ -485,6 +489,9 @@ def play_url():
 
     stream_url = request.args.get('url')
     station_name = request.args.get('name', 'vTuner Stream')
+
+    if stream_url:
+        save_last_played(stream_url, station_name)
 
     if not stream_url:
         return jsonify({"error": "Missing 'url' parameter"}), 400

@@ -10,3 +10,4 @@ build/
 artifacts/
 *.log
 .DS_Store
+last_played.json

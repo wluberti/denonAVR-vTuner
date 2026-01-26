@@ -71,8 +71,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function setSource(source) {
     try {
-        console.log('Setting source to:', source);
-        console.log('Stringified:', JSON.stringify({input: source}));
         const res = await fetch('/api/input', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -378,6 +376,26 @@ async function playUrl(url, name) {
     }
 }
 
+async function resumeRadio() {
+    try {
+        const res = await fetch('/api/last_played');
+        if (res.ok) {
+            const data = await res.json();
+            if (data.url) {
+                console.log("Resuming last station:", data.name);
+                playUrl(data.url, data.name);
+                return;
+            }
+        }
+    } catch (e) {
+        console.error("Failed to fetch last played", e);
+    }
+
+    // Fallback: Alert user
+    alert("No last played station found. Please select a station from the list first.");
+}
+
+
 function sortTable(n) {
     // Basic sort implementation could go here, but for simplicity we rely on backend sorting order usually
     // or implement client side sort if requested.
@@ -419,12 +437,16 @@ async function updateStatus() {
             return;
         }
 
-        document.getElementById('status-power').textContent = data.power || '-';
-        document.getElementById('status-source').textContent = data.source || '-';
+        // Update status elements if they exist
+        const powerEl = document.getElementById('status-power');
+        if (powerEl) powerEl.textContent = data.power || '-';
+
+        const sourceEl = document.getElementById('status-source');
+        if (sourceEl) sourceEl.textContent = data.source || '-';
 
         // Update Mute Icon
         const muteBtn = document.getElementById('mute-btn');
-        if (data.muted !== undefined) {
+        if (data.muted !== undefined && muteBtn) {
             muteBtn.textContent = data.muted ? '🔇' : '🔊';
             muteBtn.style.opacity = data.muted ? '0.5' : '1';
         }
@@ -440,11 +462,17 @@ async function updateStatus() {
                  // Clamp between 0 and 98 just in case
                  const displayVol = Math.max(0, Math.min(98, absVol));
 
-                 document.getElementById('status-volume').textContent = displayVol;
-                 document.getElementById('volume-val').textContent = displayVol;
-                 document.getElementById('volume-slider').value = displayVol;
+                 const statusVolEl = document.getElementById('status-volume');
+                 if (statusVolEl) statusVolEl.textContent = displayVol;
+
+                 const volValEl = document.getElementById('volume-val');
+                 if (volValEl) volValEl.textContent = displayVol;
+
+                 const volSliderEl = document.getElementById('volume-slider');
+                 if (volSliderEl) volSliderEl.value = displayVol;
              } else {
-                 document.getElementById('status-volume').textContent = '-';
+                 const statusVolEl = document.getElementById('status-volume');
+                 if (statusVolEl) statusVolEl.textContent = '-';
              }
         }
 
@@ -464,10 +492,12 @@ async function updateStatus() {
         // Let's append to Source for now or replace Source if it's NET/Radio.
 
         const sourceDisplay = document.getElementById('status-source');
-        if (data.source === 'NET' || data.source === 'IRADIO') {
-             sourceDisplay.innerHTML = `<strong>${data.source}</strong><br><span style="font-size:0.9em; var(--accent);">${nowPlaying}</span>`;
-        } else {
-             sourceDisplay.textContent = data.source;
+        if (sourceDisplay) {
+            if (data.source === 'NET' || data.source === 'IRADIO') {
+                 sourceDisplay.innerHTML = `<strong>${data.source}</strong><br><span style="font-size:0.9em; var(--accent);">${nowPlaying}</span>`;
+            } else {
+                 sourceDisplay.textContent = data.source;
+            }
         }
 
     } catch (e) {
