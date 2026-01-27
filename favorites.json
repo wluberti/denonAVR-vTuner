@@ -1,32 +1,44 @@
 [
   {
-    "name": "Sublime Live",
-    "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/SUBLIME.mp3",
-    "favicon": "https://6nl7xj2ntppk.b-cdn.net/73cf20f2-a361-480b-bc2f-bec43b6a2bd5",
-    "bitrate": 192
-  },
-  {
-    "name": "NPO 3FM",
-    "url": "https://icecast.omroep.nl/3fm-bb-mp3",
-    "favicon": "https://www.npo3fm.nl/apple-touch-icon.png",
-    "bitrate": 192
-  },
-  {
-    "name": "Radio Veronica Live",
-    "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/VERONICA.mp3",
-    "favicon": "",
-    "bitrate": 128
+    "name": "Radio Decibel",
+    "url": "http://stream.decibel.nl/decibel.mp3",
+    "favicon": "https://www.decibel.nl/favicon.ico",
+    "bitrate": 192,
+    "countrycode": "NL"
   },
   {
     "name": "Classicnl",
     "url": "https://classic.nl/streams/?s=main",
     "favicon": "https://www.classic.nl/favicon.ico",
-    "bitrate": 192
+    "bitrate": 192,
+    "countrycode": "NL"
   },
   {
     "name": "JazzRadio.fr Blues",
     "url": "https://jazzblues.ice.infomaniak.ch/jazzblues-high.mp3",
     "favicon": "https://www.jazzradio.fr/media/radio/thumb/100x100_blues.png",
-    "bitrate": 128
+    "bitrate": 128,
+    "countrycode": "FR"
+  },
+  {
+    "name": "Sublime Live",
+    "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/SUBLIME.mp3",
+    "favicon": "https://6nl7xj2ntppk.b-cdn.net/73cf20f2-a361-480b-bc2f-bec43b6a2bd5",
+    "bitrate": 192,
+    "countrycode": "NL"
+  },
+  {
+    "name": "Radio Veronica Live",
+    "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/VERONICA.mp3",
+    "favicon": "",
+    "bitrate": 128,
+    "countrycode": "NL"
+  },
+  {
+    "name": "NPO 3FM",
+    "url": "https://icecast.omroep.nl/3fm-bb-mp3",
+    "favicon": "https://www.npo3fm.nl/apple-touch-icon.png",
+    "bitrate": 192,
+    "countrycode": "NL"
   }
 ]
