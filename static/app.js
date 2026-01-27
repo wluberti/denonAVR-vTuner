@@ -11,6 +11,10 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('theme', isLight ? 'light' : 'dark');
     });
 
+    document.getElementById('refresh-btn').addEventListener('click', () => {
+        updateStatus();
+    });
+
     updateStatus();
     loadFavorites();
 
@@ -67,6 +71,39 @@ document.addEventListener('DOMContentLoaded', () => {
             console.error(e);
         }
     });
+
+    document.getElementById('power-on-btn').addEventListener('click', async () => {
+        try {
+            const res = await fetch('/api/power/on', {method: 'POST'});
+            const data = await res.json();
+            if (data.status === 'success') {
+                // Initial status update
+                updateStatus();
+                // Set volume to 25 (default after power on)
+                setTimeout(() => setVolume(25 - 80), 1500); // Convert 25 to -55 dB
+                // Additional delayed updates to catch power-on state changes
+                setTimeout(updateStatus, 1000);
+                setTimeout(updateStatus, 2500);
+            }
+        } catch (e) {
+            console.error(e);
+        }
+    });
+
+    document.getElementById('power-off-btn').addEventListener('click', async () => {
+        try {
+            const res = await fetch('/api/power/off', {method: 'POST'});
+            const data = await res.json();
+            if (data.status === 'success') {
+                // Immediate and delayed updates to catch power-off state
+                updateStatus();
+                setTimeout(updateStatus, 500);
+                setTimeout(updateStatus, 1500);
+            }
+        } catch (e) {
+            console.error(e);
+        }
+    });
 });
 
 async function setSource(source) {
@@ -78,7 +115,10 @@ async function setSource(source) {
         });
         const data = await res.json();
         if(data.status === 'success') {
+            // Multiple delayed updates to catch AVR state changes
             updateStatus();
+            setTimeout(updateStatus, 500);
+            setTimeout(updateStatus, 1500);
         } else {
             console.error('Set Source Error:', data);
             alert('Failed to set source: ' + (data.error || 'Unknown error'));
@@ -236,10 +276,24 @@ function renderFavorites() {
             logoHtml = `<img src="${station.favicon}" style="width: 24px; height: 24px; object-fit: contain; margin-bottom: 8px;" onerror="this.style.display='none'">`;
         }
 
+        // Country flag handling
+        let flagHtml = '';
+        if (station.countrycode) {
+            const countryCode = station.countrycode.toUpperCase();
+            // Convert country code to flag emoji using regional indicator symbols
+            const flag = countryCode
+                .split('')
+                .map(char => String.fromCodePoint(0x1F1E6 - 65 + char.charCodeAt(0)))
+                .join('');
+            flagHtml = `<span style="font-size:1.2rem; margin-left:4px;" title="${countryCode}">${flag}</span>`;
+        }
+
         btn.innerHTML = `
-            <div style="display:flex; align-items:center; gap:8px;">${logoHtml} <span>${station.name}</span></div>
-            <button class="info-fav" style="position:absolute; bottom:8px; right:8px; background:none; border:none; color:var(--text-secondary); cursor:pointer; font-size:1.2rem;">ℹ️</button>
-            <button class="delete-fav" style="position:absolute; top:8px; right:8px; background:none; border:none; color:var(--text-secondary); cursor:pointer;">✕</button>
+            <div style="display:flex; align-items:center; gap:8px;">${logoHtml} <span>${station.name}</span>${flagHtml}</div>
+            <div style="position:absolute; top:8px; right:8px; display:flex; gap:4px;">
+                <button class="info-fav btn-icon" style="padding:4px 8px; font-size:1rem;" title="Station Info">ℹ️</button>
+                <button class="delete-fav btn-icon" style="padding:4px 8px; font-size:1rem;" title="Remove">✕</button>
+            </div>
         `;
 
         // Click main area to play
@@ -273,7 +327,8 @@ async function addToFavorites(station) {
                 name: station.name,
                 url: station.url_resolved,
                 favicon: station.favicon,
-                bitrate: station.bitrate
+                bitrate: station.bitrate,
+                countrycode: station.countrycode
             })
         });
         const data = await res.json();
@@ -347,9 +402,11 @@ function renderResults(data) {
 }
 
 async function playUrl(url, name) {
-    // Show instant feedback
-    const originalText = document.querySelector('.header h1').innerText;
-    document.querySelector('.header h1').innerText = "Requesting " + (name || "Stream") + "...";
+    // Update header immediately with station name
+    const headerEl = document.getElementById('current-station');
+    if (headerEl && name) {
+        headerEl.textContent = name;
+    }
 
     try {
         let apiUrl = `/api/play_url?url=${encodeURIComponent(url)}`;
@@ -361,18 +418,18 @@ async function playUrl(url, name) {
 
         if (data.status === 'success') {
              currentPlayingUrl = url; // Track current
-             // Refresh status soon
+             // Single delayed status update
              setTimeout(updateStatus, 2000);
         } else {
             alert('Failed to play stream: ' + (data.error || 'Unknown error'));
+            // Restore header on error
+            updateStatus();
         }
     } catch (e) {
         console.error("Play URL failed", e);
         alert("Command failed");
-    } finally {
-        setTimeout(() => {
-             document.querySelector('.header h1').innerText = "DENON AVR";
-        }, 3000);
+        // Restore header on error
+        updateStatus();
     }
 }
 
@@ -437,6 +494,19 @@ async function updateStatus() {
             return;
         }
 
+        // Power State Handling
+        const powerOnBtn = document.getElementById('power-on-btn');
+        const volumeControls = document.getElementById('volume-controls');
+        const isPoweredOn = data.power === 'ON';
+
+        if (isPoweredOn) {
+            powerOnBtn.style.display = 'none';
+            volumeControls.style.display = 'flex';
+        } else {
+            powerOnBtn.style.display = 'block';
+            volumeControls.style.display = 'none';
+        }
+
         // Update status elements if they exist
         const powerEl = document.getElementById('status-power');
         if (powerEl) powerEl.textContent = data.power || '-';
@@ -476,14 +546,36 @@ async function updateStatus() {
              }
         }
 
-        // Now Playing Logic
+        // Now Playing Logic and Header Update
+        let displayText = 'DENON AVR';
         let nowPlaying = '-';
+
         if (data.artist && data.title) {
             nowPlaying = `${data.artist} - ${data.title}`;
+            displayText = nowPlaying;
         } else if (data.station) {
             nowPlaying = data.station;
+            displayText = data.station;
         } else if (data.name) {
              nowPlaying = data.name; // Fallback to AVR display name
+        }
+
+        // Show current station when Radio/NET is active, otherwise show input
+        if (data.source === 'NET' || data.source === 'IRADIO') {
+            if (displayText !== 'DENON AVR') {
+                // Already set from nowPlaying
+            } else {
+                displayText = 'Radio';
+            }
+        } else if (data.source) {
+            // Show the input name
+            displayText = data.source;
+        }
+
+        // Update header
+        const headerEl = document.getElementById('current-station');
+        if (headerEl) {
+            headerEl.textContent = displayText;
         }
 
         // We could create a dedicated 'Now Playing' element in the status card if requested.

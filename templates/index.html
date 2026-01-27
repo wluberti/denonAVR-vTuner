@@ -13,21 +13,31 @@
 <body>
     <!-- Fixed Volume Bar (Top) -->
     <div id="volume-bar" class="volume-bar">
-        <div class="volume-container">
-            <button id="mute-btn" class="btn-small" style="background:transparent; font-size:1.5rem;">🔊</button>
-            <button class="btn-small volume-btn" onclick="changeVolume(-1)">-</button>
-            <input type="range" id="volume-slider" min="0" max="98" step="0.5" value="40" style="flex-grow:1; margin:0 8px;">
-            <button class="btn-small volume-btn" onclick="changeVolume(1)">+</button>
-            <span id="volume-val" style="min-width: 40px; text-align: right;">40</span>
+        <div class="volume-container" id="volume-container">
+            <!-- Power On Button (shown when off) -->
+            <button id="power-on-btn" class="btn-primary" style="display:none; width:100%; padding:12px; font-size:1rem;">⚡ Power On</button>
+
+            <!-- Volume Controls (shown when on) -->
+            <div id="volume-controls" style="display:flex; align-items:center; width:100%;">
+                <button id="mute-btn" class="btn-small" style="background:transparent; font-size:1.5rem;">🔊</button>
+                <button class="btn-small volume-btn" onclick="changeVolume(-1)">-</button>
+                <input type="range" id="volume-slider" min="0" max="98" step="0.5" value="40" style="flex-grow:1; margin:0 8px;">
+                <button class="btn-small volume-btn" onclick="changeVolume(1)">+</button>
+                <span id="volume-val" style="min-width: 40px; text-align: right;">40</span>
+                <button id="power-off-btn" class="btn-icon" style="margin-left:12px;" title="Power Off">⏻</button>
+            </div>
         </div>
     </div>
 
     <div class="container">
         <div class="header" style="display: flex; justify-content: space-between; align-items: center;">
-            <h1>DENON AVR</h1>
-            <button id="theme-toggle" class="btn-small" style="background: transparent; color: var(--text-primary); font-size: 1.2rem;">
-                ☀️/🌙
-            </button>
+            <h1 id="current-station">DENON AVR</h1>
+            <div style="display: flex; gap: 8px;">
+                <button id="refresh-btn" class="btn-icon" title="Refresh Status">🔄</button>
+                <button id="theme-toggle" class="btn-small" style="background: transparent; color: var(--text-primary); font-size: 1.2rem;">
+                    ☀️/🌙
+                </button>
+            </div>
         </div>
 
         <!-- Input Selectors -->
@@ -44,8 +54,8 @@
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
                 <div class="group-title" style="margin-bottom: 0;">Favorites</div>
                 <div style="display: flex; gap: 8px;">
-                    <button class="btn-small" onclick="playPrevFavorite()">⏮ Prev</button>
-                    <button class="btn-small" onclick="playNextFavorite()">Next ⏭</button>
+                    <button class="btn-icon" onclick="playPrevFavorite()" title="Previous">⏮</button>
+                    <button class="btn-icon" onclick="playNextFavorite()" title="Next">⏭</button>
                 </div>
             </div>
             <div class="grid" id="favorites-grid">

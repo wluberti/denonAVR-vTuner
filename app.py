@@ -260,6 +260,28 @@ def toggle_mute():
         log_debug(f"Error toggling mute: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/power/on', methods=['POST'])
+def power_on():
+    try:
+        log_debug("Turning power on (main zone)")
+        if send_avr_command("ZMON"):
+            return jsonify({"status": "success"})
+        return jsonify({"error": "Failed to turn on"}), 500
+    except Exception as e:
+        log_debug(f"Error turning on: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/power/off', methods=['POST'])
+def power_off():
+    try:
+        log_debug("Turning power off")
+        if send_avr_command("PWSTANDBY"):
+            return jsonify({"status": "success"})
+        return jsonify({"error": "Failed to turn off"}), 500
+    except Exception as e:
+        log_debug(f"Error turning off: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/stream.mp3')
 def stream_proxy():
     """
