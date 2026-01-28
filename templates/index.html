@@ -51,7 +51,9 @@
             </div>
         </div>
 
-        <div class="control-group">
+        <!-- Radio Section (shown only when Radio input is selected) -->
+        <div id="radio-section" class="input-section">
+            <div class="control-group">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
                 <div class="group-title" style="margin-bottom: 0;">Favorites</div>
                 <div style="display: flex; gap: 8px;">
@@ -89,9 +91,30 @@
                     <!-- Results here -->
                 </tbody>
             </table>
+            </div>
         </div>
 
-        <!-- Spotify Playlists -->
+        <!-- Spotify Section (shown only when Spotify input is selected) -->
+        <div id="spotify-section" class="input-section">
+            <!-- Spotify Playback Controls -->
+            <div class="spotify-controls" id="spotify-controls" style="display: none;">
+                <div class="now-playing" id="spotify-now-playing">
+                    <img id="spotify-art" class="now-playing-art" src="" alt="Album Art">
+                    <div class="now-playing-info">
+                        <div class="now-playing-track" id="spotify-track">Not Playing</div>
+                        <div class="now-playing-artist" id="spotify-artist">-</div>
+                    </div>
+                </div>
+                <div class="playback-controls">
+                    <button class="btn-icon" onclick="spotifyControl('previous')" title="Previous Track">⏮️</button>
+                    <button class="btn-icon" onclick="spotifyControl('play')" title="Play" id="spotify-play-btn">▶️</button>
+                    <button class="btn-icon" onclick="spotifyControl('pause')" title="Pause" id="spotify-pause-btn" style="display: none;">⏸️</button>
+                    <button class="btn-icon" onclick="spotifyControl('next')" title="Next Track">⏭️</button>
+                    <button class="btn-icon" onclick="spotifyControl('stop')" title="Stop">⏹️</button>
+                </div>
+            </div>
+
+            <!-- Spotify Playlists -->
         <div class="control-group">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
                 <div class="group-title" style="margin-bottom: 0;">🎵 Spotify Playlists</div>
@@ -105,6 +128,8 @@
                 </div>
             </div>
         </div>
+    </div>
+
     <!-- Info Modal -->
     <div id="info-modal" class="modal" style="display: none;">
         <div class="modal-content">

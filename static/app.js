@@ -1,13 +1,17 @@
+// Global state
+let currentInput = null;
+let spotifyUpdateInterval = null;
+
 document.addEventListener('DOMContentLoaded', () => {
     // Theme Logic
     const savedTheme = localStorage.getItem('theme');
-    if (savedTheme === 'light') {
-        document.body.classList.add('light-theme');
+    if (savedTheme === 'dark') {
+        document.body.classList.add('dark-theme');
     }
 
     document.getElementById('theme-toggle').addEventListener('click', () => {
-        document.body.classList.toggle('light-theme');
-        const isLight = document.body.classList.contains('light-theme');
+        document.body.classList.toggle('dark-theme');
+        const isLight = document.body.classList.contains('dark-theme');
         localStorage.setItem('theme', isLight ? 'light' : 'dark');
     });
 
@@ -109,6 +113,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function setSource(source) {
     try {
+        // Update current input
+        currentInput = source;
+
+        // Show/hide input sections
+        showInputSection(source);
+
         const res = await fetch('/api/input', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -435,6 +445,10 @@ async function playUrl(url, name) {
 }
 
 async function resumeRadio() {
+    // Update current input and show radio section
+    currentInput = 'NETWORK';
+    showInputSection('NETWORK');
+
     try {
         const res = await fetch('/api/last_played');
         if (res.ok) {
@@ -616,6 +630,101 @@ async function callApi(url) {
 // ============ SPOTIFY INTEGRATION ============
 
 let currentSpotifyPlaylist = null;
+
+// Show/hide input sections based on selected source
+function showInputSection(source) {
+    const radioSection = document.getElementById('radio-section');
+    const spotifySection = document.getElementById('spotify-section');
+
+    // Hide all sections
+    radioSection.classList.remove('active');
+    spotifySection.classList.remove('active');
+    radioSection.style.display = 'none';
+    spotifySection.style.display = 'none';
+
+    // Stop Spotify updates if leaving Spotify
+    if (source !== 'SPOTIFY' && spotifyUpdateInterval) {
+        clearInterval(spotifyUpdateInterval);
+        spotifyUpdateInterval = null;
+    }
+
+    // Show relevant section
+    if (source === 'NETWORK' || source === 'resumeRadio') {
+        radioSection.classList.add('active');
+        radioSection.style.display = 'block';
+    } else if (source === 'SPOTIFY') {
+        spotifySection.classList.add('active');
+        spotifySection.style.display = 'block';
+
+        // Start periodic updates for Spotify now playing
+        if (!spotifyUpdateInterval) {
+            updateSpotifyNowPlaying(); // Immediate update
+            spotifyUpdateInterval = setInterval(updateSpotifyNowPlaying, 5000); // Every 5 seconds
+        }
+    }
+}
+
+// Control Spotify playback
+async function spotifyControl(action) {
+    try {
+        const res = await fetch('/api/spotify/control', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action })
+        });
+
+        if (res.ok) {
+            console.log(`Spotify ${action} successful`);
+            // Update now playing display after a short delay
+            setTimeout(updateSpotifyNowPlaying, 500);
+        } else {
+            const data = await res.json();
+            console.error(`Spotify ${action} failed:`, data);
+            alert(`Failed to ${action}: ${data.error || 'Unknown error'}`);
+        }
+    } catch (e) {
+        console.error(`Failed to ${action} Spotify`, e);
+        alert(`Network error during ${action}`);
+    }
+}
+
+// Update Spotify now playing display
+async function updateSpotifyNowPlaying() {
+    try {
+        const res = await fetch('/api/spotify/current');
+        const data = await res.json();
+
+        const controls = document.getElementById('spotify-controls');
+        const artEl = document.getElementById('spotify-art');
+        const trackEl = document.getElementById('spotify-track');
+        const artistEl = document.getElementById('spotify-artist');
+        const playBtn = document.getElementById('spotify-play-btn');
+        const pauseBtn = document.getElementById('spotify-pause-btn');
+
+        if (data.track) {
+            controls.style.display = 'block';
+            artEl.src = data.track.image_url || '';
+            trackEl.textContent = data.track.name || 'Unknown Track';
+            artistEl.textContent = data.track.artists || 'Unknown Artist';
+
+            // Toggle play/pause button visibility
+            if (data.playing) {
+                playBtn.style.display = 'none';
+                pauseBtn.style.display = 'flex';
+            } else {
+                playBtn.style.display = 'flex';
+                pauseBtn.style.display = 'none';
+            }
+        } else {
+            // No track playing
+            controls.style.display = 'none';
+        }
+    } catch (e) {
+        console.error('Failed to update Spotify now playing', e);
+        // Don't show controls if there's an error
+        document.getElementById('spotify-controls').style.display = 'none';
+    }
+}
 
 async function checkSpotifyAuth() {
     try {
