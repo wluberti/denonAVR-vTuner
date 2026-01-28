@@ -119,6 +119,13 @@ async function setSource(source) {
         // Show/hide input sections
         showInputSection(source);
 
+        // For NETWORK (Radio) and SPOTIFY, only navigate UI - don't change AVR input
+        // Input will change when user selects a station or playlist
+        if (source === 'NETWORK' || source === 'SPOTIFY') {
+            console.log(`Navigation only: ${source} section displayed`);
+            return;
+        }
+
         const res = await fetch('/api/input', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -417,6 +424,17 @@ async function playUrl(url, name) {
     const headerEl = document.getElementById('current-station');
     if (headerEl && name) {
         headerEl.textContent = name;
+    }
+
+    // Switch AVR to Radio/NETWORK input first
+    try {
+        await fetch('/api/input', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({input: 'NETWORK'})
+        });
+    } catch (e) {
+        console.error('Failed to switch to NETWORK input:', e);
     }
 
     try {
@@ -934,6 +952,17 @@ async function playSpotifyPlaylist(playlistUri, playlistName) {
     if (!playlistUri) {
         alert('Cannot play this playlist directly. Try playing individual tracks.');
         return;
+    }
+
+    // Switch AVR to Spotify input first
+    try {
+        await fetch('/api/input', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({input: 'SPOTIFY'})
+        });
+    } catch (e) {
+        console.error('Failed to switch to SPOTIFY input:', e);
     }
 
     try {
