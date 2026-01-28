@@ -1,4 +1,4 @@
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, redirect, session, url_for
 import sys
 import requests
 import os
@@ -7,14 +7,24 @@ import html
 import json
 import xml.etree.ElementTree as ET
 from dotenv import load_dotenv
+import spotipy
+from spotipy.oauth2 import SpotifyOAuth
 
 load_dotenv()
 
 app = Flask(__name__)
+app.secret_key = os.getenv("SECRET_KEY", os.urandom(24))
 
 # Configuration
 DENON_IP = os.getenv("DENON_IP")
 DEBUG = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
+
+# Spotify Configuration
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")
+SPOTIFY_SCOPE = "user-read-playback-state user-modify-playback-state user-read-currently-playing playlist-read-private playlist-read-collaborative user-library-read"
+SPOTIFY_TOKENS_FILE = os.path.join(os.path.dirname(__file__), "spotify_tokens.json")
 
 def log_debug(msg):
     if DEBUG:
@@ -180,6 +190,7 @@ def set_input():
                 "CBL/SAT": "SAT/CBL",   # TV Audio (Button sends CBL/SAT, requires SAT/CBL command)
                 "NETWORK": "IRADIO",    # Radio (Button sends NETWORK, requires IRADIO command)
                 "CD": "CD",             # XS4ALL STB (Button sends CD)
+                "SPOTIFY": "SPOTIFY",   # Spotify Connect
 
                 # Unused Inputs (Commented out)
                 # "TV": "TV",
@@ -672,6 +683,335 @@ def play_url():
             import traceback
             traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+# ============ SPOTIFY INTEGRATION ============
+
+def get_spotify_oauth():
+    """Create Spotify OAuth handler"""
+    if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET or not SPOTIFY_REDIRECT_URI:
+        return None
+    return SpotifyOAuth(
+        client_id=SPOTIFY_CLIENT_ID,
+        client_secret=SPOTIFY_CLIENT_SECRET,
+        redirect_uri=SPOTIFY_REDIRECT_URI,
+        scope=SPOTIFY_SCOPE,
+        cache_path=SPOTIFY_TOKENS_FILE
+    )
+
+def get_spotify_client():
+    """Get authenticated Spotify client"""
+    sp_oauth = get_spotify_oauth()
+    if not sp_oauth:
+        return None
+
+    token_info = sp_oauth.get_cached_token()
+    if not token_info:
+        return None
+
+    # Refresh if needed
+    if sp_oauth.is_token_expired(token_info):
+        token_info = sp_oauth.refresh_access_token(token_info['refresh_token'])
+
+    return spotipy.Spotify(auth=token_info['access_token'])
+
+@app.route('/spotify/login')
+def spotify_login():
+    """Initiate Spotify OAuth flow"""
+    sp_oauth = get_spotify_oauth()
+    if not sp_oauth:
+        return jsonify({"error": "Spotify not configured"}), 500
+
+    auth_url = sp_oauth.get_authorize_url()
+    return redirect(auth_url)
+
+@app.route('/spotify/callback')
+def spotify_callback():
+    """Handle Spotify OAuth callback"""
+    sp_oauth = get_spotify_oauth()
+    if not sp_oauth:
+        return jsonify({"error": "Spotify not configured"}), 500
+
+    code = request.args.get('code')
+    if not code:
+        return jsonify({"error": "No authorization code provided"}), 400
+
+    try:
+        token_info = sp_oauth.get_access_token(code)
+        session['spotify_authed'] = True
+        log_debug("Spotify authentication successful")
+        return redirect('/')
+    except Exception as e:
+        log_debug(f"Spotify auth error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/spotify/status')
+def spotify_status():
+    """Check if user is authenticated with Spotify"""
+    sp = get_spotify_client()
+    if sp:
+        try:
+            user = sp.current_user()
+            return jsonify({
+                "authenticated": True,
+                "user": {
+                    "display_name": user.get('display_name'),
+                    "id": user.get('id')
+                }
+            })
+        except:
+            return jsonify({"authenticated": False})
+    return jsonify({"authenticated": False})
+
+@app.route('/api/spotify/logout', methods=['POST'])
+def spotify_logout():
+    """Clear Spotify authentication"""
+    try:
+        if os.path.exists(SPOTIFY_TOKENS_FILE):
+            os.remove(SPOTIFY_TOKENS_FILE)
+        session.pop('spotify_authed', None)
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/spotify/playlists')
+def spotify_playlists():
+    """Get user's Spotify playlists"""
+    sp = get_spotify_client()
+    if not sp:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    try:
+        playlists = []
+        results = sp.current_user_playlists(limit=50)
+
+        while results:
+            for item in results['items']:
+                # Get album art (first image, or None)
+                images = item.get('images', [])
+                image_url = images[0]['url'] if images else None
+
+                playlists.append({
+                    "id": item['id'],
+                    "name": item['name'],
+                    "uri": item['uri'],
+                    "tracks_total": item['tracks']['total'],
+                    "image_url": image_url,
+                    "owner": item['owner']['display_name']
+                })
+
+            # Get next page if available
+            if results['next']:
+                results = sp.next(results)
+            else:
+                results = None
+
+        # Also get saved tracks/liked songs
+        try:
+            saved_tracks = sp.current_user_saved_tracks(limit=1)
+            if saved_tracks['total'] > 0:
+                playlists.insert(0, {
+                    "id": "liked",
+                    "name": "Liked Songs",
+                    "uri": None,  # Special case
+                    "tracks_total": saved_tracks['total'],
+                    "image_url": None,
+                    "owner": "You"
+                })
+        except:
+            pass
+
+        return jsonify(playlists)
+    except Exception as e:
+        log_debug(f"Error fetching playlists: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/spotify/playlist/<playlist_id>/tracks')
+def spotify_playlist_tracks(playlist_id):
+    """Get tracks from a specific playlist"""
+    sp = get_spotify_client()
+    if not sp:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    try:
+        tracks = []
+
+        # Special case for liked songs
+        if playlist_id == "liked":
+            results = sp.current_user_saved_tracks(limit=50)
+        else:
+            results = sp.playlist_tracks(playlist_id, limit=50)
+
+        while results:
+            for item in results['items']:
+                track = item['track'] if 'track' in item else item
+                if not track:
+                    continue
+
+                artists = ', '.join([artist['name'] for artist in track.get('artists', [])])
+                album_images = track.get('album', {}).get('images', [])
+                image_url = album_images[0]['url'] if album_images else None
+
+                tracks.append({
+                    "id": track['id'],
+                    "name": track['name'],
+                    "uri": track['uri'],
+                    "artists": artists,
+                    "album": track.get('album', {}).get('name', ''),
+                    "duration_ms": track.get('duration_ms', 0),
+                    "image_url": image_url
+                })
+
+            # Get next page if available
+            if results['next']:
+                results = sp.next(results)
+            else:
+                results = None
+
+        return jsonify(tracks)
+    except Exception as e:
+        log_debug(f"Error fetching playlist tracks: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/spotify/devices')
+def spotify_devices():
+    """Get available Spotify Connect devices"""
+    sp = get_spotify_client()
+    if not sp:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    try:
+        devices = sp.devices()
+        return jsonify(devices.get('devices', []))
+    except Exception as e:
+        log_debug(f"Error fetching devices: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/spotify/play', methods=['POST'])
+def spotify_play():
+    """Play Spotify content on AVR"""
+    sp = get_spotify_client()
+    if not sp:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    data = request.json
+    context_uri = data.get('context_uri')  # playlist/album URI
+    track_uris = data.get('track_uris')    # specific tracks
+    device_id = data.get('device_id')      # target device
+
+    try:
+        # Step 1: Switch AVR to Spotify input
+        log_debug("Switching AVR to Spotify input...")
+        if not send_avr_command("SISPOTIFY"):
+            log_debug("Failed to switch to Spotify input, but continuing...")
+
+        # Wait a moment for AVR to switch
+        import time
+        time.sleep(1)
+
+        # Step 2: Find Denon device if device_id not provided
+        if not device_id:
+            devices = sp.devices()
+            denon_device = None
+
+            for device in devices.get('devices', []):
+                # Look for Denon, AVR, or X4000 in device name
+                device_name = device.get('name', '').lower()
+                if 'denon' in device_name or 'avr' in device_name or 'x4000' in device_name:
+                    denon_device = device
+                    device_id = device['id']
+                    log_debug(f"Found Denon device: {device['name']}")
+                    break
+
+            if not device_id:
+                log_debug(f"Available devices: {devices.get('devices', [])}")
+                return jsonify({"error": "Denon AVR not found in Spotify Connect devices. Make sure Spotify input is active on AVR."}), 404
+
+        # Step 3: Transfer playback and play
+        if context_uri:
+            # Play playlist/album
+            log_debug(f"Starting playback of {context_uri} on device {device_id}")
+            sp.start_playback(device_id=device_id, context_uri=context_uri)
+        elif track_uris:
+            # Play specific tracks
+            log_debug(f"Starting playback of tracks on device {device_id}")
+            sp.start_playback(device_id=device_id, uris=track_uris)
+        else:
+            # Just transfer playback
+            log_debug(f"Transferring playback to device {device_id}")
+            sp.transfer_playback(device_id=device_id, force_play=True)
+
+        return jsonify({"status": "success", "device_id": device_id})
+
+    except Exception as e:
+        log_debug(f"Error playing Spotify: {e}")
+        if DEBUG:
+            import traceback
+            traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/spotify/control', methods=['POST'])
+def spotify_control():
+    """Control Spotify playback (play/pause/skip)"""
+    sp = get_spotify_client()
+    if not sp:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    data = request.json
+    action = data.get('action')
+
+    try:
+        if action == 'play':
+            sp.start_playback()
+        elif action == 'pause':
+            sp.pause_playback()
+        elif action == 'next':
+            sp.next_track()
+        elif action == 'previous':
+            sp.previous_track()
+        else:
+            return jsonify({"error": "Invalid action"}), 400
+
+        return jsonify({"status": "success"})
+    except Exception as e:
+        log_debug(f"Error controlling Spotify: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/spotify/current')
+def spotify_current():
+    """Get currently playing track"""
+    sp = get_spotify_client()
+    if not sp:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    try:
+        current = sp.current_playback()
+        if not current or not current.get('item'):
+            return jsonify({"playing": False})
+
+        track = current['item']
+        artists = ', '.join([artist['name'] for artist in track.get('artists', [])])
+        album_images = track.get('album', {}).get('images', [])
+        image_url = album_images[0]['url'] if album_images else None
+
+        return jsonify({
+            "playing": current.get('is_playing', False),
+            "track": {
+                "name": track['name'],
+                "artists": artists,
+                "album": track.get('album', {}).get('name', ''),
+                "image_url": image_url,
+                "duration_ms": track.get('duration_ms', 0),
+                "progress_ms": current.get('progress_ms', 0)
+            },
+            "device": {
+                "name": current.get('device', {}).get('name', ''),
+                "type": current.get('device', {}).get('type', '')
+            }
+        })
+    except Exception as e:
+        log_debug(f"Error fetching current track: {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)

@@ -2,7 +2,7 @@ services:
   web:
     build: .
     ports:
-      - "${HOST_PORT:-8800}:6000"
+      - "${HOST_PORT:-8877}:6000"
     volumes:
       - .:/app
     environment:

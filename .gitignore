@@ -10,3 +10,5 @@ build/
 artifacts/
 *.log
 .DS_Store
+spotify_tokens.json
+

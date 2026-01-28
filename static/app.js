@@ -17,6 +17,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     updateStatus();
     loadFavorites();
+    checkSpotifyAuth();
 
     // Bind Search
     const searchBtn = document.getElementById('search-btn');
@@ -611,3 +612,283 @@ async function callApi(url) {
         alert("Command failed");
     }
 }
+
+// ============ SPOTIFY INTEGRATION ============
+
+let currentSpotifyPlaylist = null;
+
+async function checkSpotifyAuth() {
+    try {
+        const res = await fetch('/api/spotify/status');
+        const data = await res.json();
+
+        const authStatus = document.getElementById('spotify-auth-status');
+        const spotifyContent = document.getElementById('spotify-content');
+
+        if (data.authenticated) {
+            // Show user info and logout button
+            authStatus.innerHTML = `
+                <span style="color: var(--text-secondary); font-size: 0.9rem;">
+                    Logged in as <strong>${data.user.display_name || data.user.id}</strong>
+                </span>
+                <button class="btn-small" onclick="logoutSpotify()" style="background: var(--card-bg); border: 1px solid var(--border-color);">
+                    Logout
+                </button>
+            `;
+
+            // Load playlists
+            loadSpotifyPlaylists();
+        } else {
+            // Show login button
+            authStatus.innerHTML = `
+                <button class="btn-small btn-primary" onclick="loginSpotify()">
+                    Login with Spotify
+                </button>
+            `;
+
+            spotifyContent.innerHTML = `
+                <div style="text-align: center; color: var(--text-secondary); padding: 20px;">
+                    Login with your Spotify Premium account to browse and play your playlists on the Denon AVR.
+                </div>
+            `;
+        }
+    } catch (e) {
+        console.error("Failed to check Spotify auth", e);
+        document.getElementById('spotify-content').innerHTML = `
+            <div style="text-align: center; color: var(--error); padding: 20px;">
+                Failed to check Spotify authentication status.
+            </div>
+        `;
+    }
+}
+
+function loginSpotify() {
+    window.location.href = '/spotify/login';
+}
+
+async function logoutSpotify() {
+    try {
+        const res = await fetch('/api/spotify/logout', { method: 'POST' });
+        if (res.ok) {
+            checkSpotifyAuth();
+        }
+    } catch (e) {
+        console.error("Logout failed", e);
+    }
+}
+
+async function loadSpotifyPlaylists() {
+    const spotifyContent = document.getElementById('spotify-content');
+    spotifyContent.innerHTML = '<div style="text-align: center; padding: 20px;">Loading playlists...</div>';
+
+    try {
+        const res = await fetch('/api/spotify/playlists');
+        const playlists = await res.json();
+
+        if (playlists.error) {
+            spotifyContent.innerHTML = `
+                <div style="text-align: center; color: var(--error); padding: 20px;">
+                    ${playlists.error}
+                </div>
+            `;
+            return;
+        }
+
+        if (!playlists.length) {
+            spotifyContent.innerHTML = `
+                <div style="text-align: center; color: var(--text-secondary); padding: 20px;">
+                    No playlists found.
+                </div>
+            `;
+            return;
+        }
+
+        // Render playlists in a grid
+        let html = '<div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px;">';
+
+        playlists.forEach(playlist => {
+            const imgHtml = playlist.image_url
+                ? `<img src="${playlist.image_url}" style="width: 100%; height: 150px; object-fit: cover; border-radius: 8px; margin-bottom: 8px;" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22150%22 height=%22150%22><rect fill=%22%233a3a3a%22 width=%22150%22 height=%22150%22/><text x=%2250%%22 y=%2250%%22 font-family=%22Arial%22 font-size=%2220%22 fill=%22%23666%22 text-anchor=%22middle%22 dy=%22.3em%22>🎵</text></svg>'">`
+                : '<div style="width: 100%; height: 150px; background: var(--input-bg); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 3rem; margin-bottom: 8px;">💚</div>';
+
+            html += `
+                <div class="btn" onclick="showSpotifyPlaylist('${playlist.id}', '${playlist.name.replace(/'/g, "\\'")}', '${playlist.uri || ''}', ${playlist.tracks_total})"
+                     style="flex-direction: column; align-items: stretch; padding: 0; overflow: hidden; cursor: pointer;">
+                    ${imgHtml}
+                    <div style="padding: 12px;">
+                        <div style="font-weight: 600; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${playlist.name}">
+                            ${playlist.name}
+                        </div>
+                        <div style="font-size: 0.85rem; color: var(--text-secondary);">
+                            ${playlist.tracks_total} tracks
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+
+        html += '</div>';
+        spotifyContent.innerHTML = html;
+    } catch (e) {
+        console.error("Failed to load Spotify playlists", e);
+        spotifyContent.innerHTML = `
+            <div style="text-align: center; color: var(--error); padding: 20px;">
+                Failed to load playlists.
+            </div>
+        `;
+    }
+}
+
+async function showSpotifyPlaylist(playlistId, playlistName, playlistUri, trackCount) {
+    const modal = document.getElementById('spotify-tracks-modal');
+    const title = document.getElementById('spotify-modal-title');
+    const info = document.getElementById('spotify-modal-info');
+    const tracksList = document.getElementById('spotify-tracks-list');
+    const playBtn = document.getElementById('spotify-play-playlist-btn');
+
+    // Store current playlist for playback
+    currentSpotifyPlaylist = { id: playlistId, uri: playlistUri, name: playlistName };
+
+    // Set header
+    title.textContent = playlistName;
+    info.textContent = `${trackCount} tracks`;
+
+    // Show loading
+    tracksList.innerHTML = '<div style="text-align: center; padding: 20px;">Loading tracks...</div>';
+    modal.style.display = 'flex';
+
+    // Set play button action
+    playBtn.onclick = () => {
+        playSpotifyPlaylist(playlistUri, playlistName);
+        modal.style.display = 'none';
+    };
+
+    // Load tracks
+    try {
+        const res = await fetch(`/api/spotify/playlist/${playlistId}/tracks`);
+        const tracks = await res.json();
+
+        if (tracks.error) {
+            tracksList.innerHTML = `<div style="text-align: center; color: var(--error); padding: 20px;">${tracks.error}</div>`;
+            return;
+        }
+
+        if (!tracks.length) {
+            tracksList.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 20px;">No tracks found.</div>';
+            return;
+        }
+
+        // Render tracks
+        let html = '<div style="display: flex; flex-direction: column; gap: 8px;">';
+        tracks.forEach((track, index) => {
+            const duration = track.duration_ms ? formatDuration(track.duration_ms) : '';
+            const imgHtml = track.image_url
+                ? `<img src="${track.image_url}" style="width: 40px; height: 40px; object-fit: cover; border-radius: 4px;">`
+                : '<div style="width: 40px; height: 40px; background: var(--input-bg); border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 1.2rem;">🎵</div>';
+
+            html += `
+                <div style="display: flex; gap: 12px; align-items: center; padding: 8px; background: var(--input-bg); border-radius: 6px; cursor: pointer;"
+                     onclick="playSpotifyTrack(['${track.uri}'], '${track.name.replace(/'/g, "\\'")} - ${track.artists.replace(/'/g, "\\'")}')"
+                     title="Click to play">
+                    ${imgHtml}
+                    <div style="flex-grow: 1; min-width: 0;">
+                        <div style="font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                            ${track.name}
+                        </div>
+                        <div style="font-size: 0.85rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                            ${track.artists}
+                        </div>
+                    </div>
+                    <div style="color: var(--text-secondary); font-size: 0.85rem; white-space: nowrap;">
+                        ${duration}
+                    </div>
+                </div>
+            `;
+        });
+        html += '</div>';
+
+        tracksList.innerHTML = html;
+    } catch (e) {
+        console.error("Failed to load tracks", e);
+        tracksList.innerHTML = '<div style="text-align: center; color: var(--error); padding: 20px;">Failed to load tracks.</div>';
+    }
+}
+
+function formatDuration(ms) {
+    const totalSeconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
+async function playSpotifyPlaylist(playlistUri, playlistName) {
+    if (!playlistUri) {
+        alert('Cannot play this playlist directly. Try playing individual tracks.');
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/spotify/play', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ context_uri: playlistUri })
+        });
+
+        const data = await res.json();
+
+        if (data.status === 'success') {
+            console.log('Spotify playback started');
+            // Update header to show Spotify is playing
+            const headerEl = document.getElementById('current-station');
+            if (headerEl) {
+                headerEl.textContent = `🎵 ${playlistName}`;
+            }
+            // Update status
+            setTimeout(updateStatus, 2000);
+        } else {
+            alert(`Error: ${data.error || 'Failed to start playback'}`);
+        }
+    } catch (e) {
+        console.error('Failed to play Spotify', e);
+        alert('Failed to start Spotify playback. Make sure AVR is on and Spotify input is available.');
+    }
+}
+
+async function playSpotifyTrack(trackUris, trackName) {
+    try {
+        const res = await fetch('/api/spotify/play', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ track_uris: trackUris })
+        });
+
+        const data = await res.json();
+
+        if (data.status === 'success') {
+            console.log('Spotify track playing');
+            const headerEl = document.getElementById('current-station');
+            if (headerEl) {
+                headerEl.textContent = trackName;
+            }
+            setTimeout(updateStatus, 2000);
+        } else {
+            alert(`Error: ${data.error || 'Failed to play track'}`);
+        }
+    } catch (e) {
+        console.error('Failed to play Spotify track', e);
+        alert('Failed to play track.');
+    }
+}
+
+// Bind Spotify modal close
+document.addEventListener('DOMContentLoaded', () => {
+    const spotifyModal = document.getElementById('spotify-tracks-modal');
+    const closeSpotifyBtn = document.getElementById('close-spotify-modal');
+
+    if (closeSpotifyBtn) {
+        closeSpotifyBtn.onclick = () => spotifyModal.style.display = "none";
+        window.addEventListener('click', (event) => {
+            if (event.target == spotifyModal) spotifyModal.style.display = "none";
+        });
+    }
+});

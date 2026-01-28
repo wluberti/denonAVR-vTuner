@@ -43,10 +43,11 @@
         <!-- Input Selectors -->
         <div class="control-group">
             <div class="group-title">Input Source</div>
-            <div class="grid" style="grid-template-columns: repeat(3, 1fr);">
+            <div class="grid" style="grid-template-columns: repeat(4, 1fr);">
                 <button class="btn" onclick="setSource('CBL/SAT')">📺 TV Audio</button>
                 <button class="btn" onclick="setSource('CD')">📡 XS4ALL STB</button>
                 <button class="btn" onclick="resumeRadio()">🌍 Radio</button>
+                <button class="btn" onclick="setSource('SPOTIFY')">🎵 Spotify</button>
             </div>
         </div>
 
@@ -62,6 +63,21 @@
                 <!-- Favorites will be loaded here -->
                 <div style="grid-column: 1 / -1; text-align: center; color: var(--text-secondary); padding: 20px;">
                     No favorites saved. Search for a station and click ❤️ to save.
+                </div>
+            </div>
+        </div>
+
+        <!-- Spotify Playlists -->
+        <div class="control-group">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <div class="group-title" style="margin-bottom: 0;">🎵 Spotify Playlists</div>
+                <div id="spotify-auth-status" style="display: flex; gap: 8px; align-items: center;">
+                    <!-- Auth status will be loaded here -->
+                </div>
+            </div>
+            <div id="spotify-content">
+                <div style="text-align: center; color: var(--text-secondary); padding: 20px;">
+                    Checking Spotify authentication...
                 </div>
             </div>
         </div>
@@ -120,6 +136,31 @@
 
             <div style="margin-top: 20px; text-align: right;">
                  <button class="btn btn-primary" id="modal-play-btn">Play Station</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Spotify Tracks Modal -->
+    <div id="spotify-tracks-modal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 700px;">
+            <span class="close-modal" id="close-spotify-modal">&times;</span>
+            <div id="spotify-modal-header" style="display: flex; gap: 16px; align-items: center; margin-bottom: 20px;">
+                <img id="spotify-modal-img" src="" style="width: 80px; height: 80px; object-fit: cover; border-radius: 8px; display: none;">
+                <div>
+                    <h2 id="spotify-modal-title" style="margin: 0;">Playlist Name</h2>
+                    <p id="spotify-modal-info" style="color: var(--text-secondary); margin: 5px 0 0 0; font-size: 0.9rem;"></p>
+                </div>
+            </div>
+
+            <div class="modal-section">
+                <h3>Tracks</h3>
+                <div id="spotify-tracks-list" style="max-height: 400px; overflow-y: auto;">
+                    <!-- Tracks will be loaded here -->
+                </div>
+            </div>
+
+            <div style="margin-top: 20px; text-align: right;">
+                 <button class="btn btn-primary" id="spotify-play-playlist-btn">▶ Play Playlist</button>
             </div>
         </div>
     </div>
