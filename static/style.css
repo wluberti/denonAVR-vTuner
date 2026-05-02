@@ -12,20 +12,7 @@
     --hover-bg: #f0f0f0;
 }
 
-/* Dark Theme */
-@media (prefers-color-scheme: dark) {
-    :root {
-        --bg-color: #0f0f0f;
-        --card-bg: #1a1a1a;
-        --accent: #1db954;
-        --text-primary: #e0e0e0;
-        --text-secondary: #a0a0a0;
-        --border-color: #333;
-        --input-bg: #1e1e1e;
-        --hover-bg: #2a2a2a;
-        --error: #ff6b6b;
-    }
-}
+/* Dark Theme — applied via JS class only (light is always the default) */
 
 /* Manual dark theme toggle */
 body.dark-theme {
@@ -69,11 +56,26 @@ body {
     margin-bottom: 2rem;
 }
 
+.header-copy {
+    min-width: 0;
+    text-align: left;
+}
+
 .header h1 {
     font-weight: 600;
     letter-spacing: -0.5px;
     margin: 0;
     font-size: clamp(1.5rem, 4vw, 2rem);
+}
+
+.header-subtitle {
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+    margin-top: 0.35rem;
+    max-width: min(70vw, 720px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* Status Card */
@@ -449,8 +451,16 @@ input:focus, select:focus, textarea:focus {
         padding-top: 70px;
     }
 
+    .header {
+        align-items: flex-start;
+    }
+
     .header h1 {
         font-size: 1.5rem;
+    }
+
+    .header-subtitle {
+        max-width: calc(100vw - 120px);
     }
 
     .status-card {
@@ -500,4 +510,142 @@ input:focus, select:focus, textarea:focus {
     .btn:hover {
         border-width: 2px;
     }
+}
+
+/* ========== Favorites Cards ========== */
+.fav-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    cursor: pointer;
+    transition: box-shadow 0.2s ease, transform 0.15s ease;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+}
+
+.fav-card:hover {
+    box-shadow: 0 4px 14px rgba(0,0,0,0.14);
+    transform: translateY(-2px);
+}
+
+.fav-card-image {
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: cover;
+    background: var(--input-bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 2.5rem;
+    flex-shrink: 0;
+}
+
+.fav-card-image img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.fav-card-body {
+    padding: 10px 12px 6px;
+    flex: 1;
+    min-width: 0;
+}
+
+.fav-card-name {
+    font-weight: 600;
+    font-size: 0.9rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 2px;
+}
+
+.fav-card-meta {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.fav-card-actions {
+    display: flex;
+    border-top: 1px solid var(--border-color);
+}
+
+.fav-card-actions button {
+    flex: 1;
+    background: transparent;
+    border: none;
+    border-right: 1px solid var(--border-color);
+    padding: 8px 4px;
+    cursor: pointer;
+    font-size: 1rem;
+    color: var(--text-secondary);
+    transition: background 0.15s, color 0.15s;
+    min-height: 36px;
+}
+
+.fav-card-actions button:last-child {
+    border-right: none;
+}
+
+.fav-card-actions button:hover {
+    background: var(--hover-bg);
+    color: var(--text-primary);
+}
+
+.fav-card-actions button.btn-play:hover {
+    background: var(--accent);
+    color: white;
+}
+
+.fav-card-actions button.btn-delete:hover {
+    background: var(--error);
+    color: white;
+}
+
+/* ========== Spotify Sort Toolbar ========== */
+.sort-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+}
+
+.sort-bar label {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-right: 4px;
+}
+
+.sort-btn {
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.sort-btn:hover {
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+
+.sort-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+    font-weight: 600;
 }

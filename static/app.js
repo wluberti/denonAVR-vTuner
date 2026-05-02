@@ -1,9 +1,138 @@
 // Global state
 let currentInput = null;
 let spotifyUpdateInterval = null;
+let currentSource = null;
+let currentStationName = null;
+let currentRadioTrack = '';
+let radioMetadataInterval = null;
+const RADIO_SOURCES = new Set(['NET', 'IRADIO', 'NETWORK']);
+const RADIO_METADATA_INTERVAL_MS = 15000;
+
+function isRadioSource(source) {
+    return RADIO_SOURCES.has(source);
+}
+
+function setHeaderTitle(title) {
+    const headerEl = document.getElementById('current-station');
+    if (headerEl) {
+        headerEl.textContent = title || 'DENON AVR';
+    }
+}
+
+function setHeaderSubtitle(subtitle = '') {
+    const subtitleEl = document.getElementById('current-track');
+    if (!subtitleEl) {
+        return;
+    }
+
+    if (subtitle) {
+        subtitleEl.textContent = subtitle;
+        subtitleEl.hidden = false;
+    } else {
+        subtitleEl.textContent = '';
+        subtitleEl.hidden = true;
+    }
+}
+
+function setHeaderDisplay(title, subtitle = '') {
+    setHeaderTitle(title);
+    setHeaderSubtitle(subtitle);
+}
+
+async function loadLastPlayedStation() {
+    if (currentPlayingUrl && currentStationName) {
+        return {
+            url: currentPlayingUrl,
+            name: currentStationName
+        };
+    }
+
+    try {
+        const res = await fetch('/api/last_played');
+        if (!res.ok) {
+            return null;
+        }
+
+        const data = await res.json();
+        if (!data.url) {
+            return null;
+        }
+
+        currentPlayingUrl = data.url;
+        currentStationName = data.name || currentStationName;
+        return data;
+    } catch (e) {
+        console.error('Failed to load last played station', e);
+        return null;
+    }
+}
+
+function updateRadioHeader() {
+    const stationName = currentStationName || 'Radio';
+    const liveText = currentRadioTrack || '';
+    setHeaderDisplay(stationName, liveText);
+
+    const sourceDisplay = document.getElementById('status-source');
+    if (sourceDisplay && isRadioSource(currentSource)) {
+        const detail = liveText || stationName;
+        sourceDisplay.innerHTML = `<strong>${currentSource}</strong><br><span style="font-size:0.9em; color: var(--accent);">${detail}</span>`;
+    }
+}
+
+async function updateRadioNowPlaying() {
+    if (!isRadioSource(currentSource)) {
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/radio_now_playing');
+        if (!res.ok) {
+            return;
+        }
+
+        const data = await res.json();
+
+        if (!data.url) {
+            const lastPlayed = await loadLastPlayedStation();
+            if (lastPlayed?.name) {
+                currentStationName = lastPlayed.name;
+            }
+            updateRadioHeader();
+            return;
+        }
+
+        currentPlayingUrl = data.url;
+        currentStationName = data.station_name || currentStationName;
+        currentRadioTrack = data.now_playing && data.now_playing !== 'Unknown' ? data.now_playing : '';
+        updateRadioHeader();
+    } catch (e) {
+        console.error('Failed to update radio metadata', e);
+    }
+}
+
+function startRadioMetadataPolling() {
+    if (radioMetadataInterval) {
+        return;
+    }
+
+    updateRadioNowPlaying();
+    radioMetadataInterval = setInterval(updateRadioNowPlaying, RADIO_METADATA_INTERVAL_MS);
+}
+
+function stopRadioMetadataPolling() {
+    if (radioMetadataInterval) {
+        clearInterval(radioMetadataInterval);
+        radioMetadataInterval = null;
+    }
+
+    currentRadioTrack = '';
+    if (!isRadioSource(currentSource)) {
+        setHeaderSubtitle('');
+    }
+}
 
 document.addEventListener('DOMContentLoaded', () => {
-    // Theme Logic
+    // Theme Logic — light is always default; dark only applied manually
     const savedTheme = localStorage.getItem('theme');
     if (savedTheme === 'dark') {
         document.body.classList.add('dark-theme');
@@ -11,8 +140,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('theme-toggle').addEventListener('click', () => {
         document.body.classList.toggle('dark-theme');
-        const isLight = document.body.classList.contains('dark-theme');
-        localStorage.setItem('theme', isLight ? 'light' : 'dark');
+        const isDark = document.body.classList.contains('dark-theme');
+        localStorage.setItem('theme', isDark ? 'dark' : 'light');
     });
 
     document.getElementById('refresh-btn').addEventListener('click', () => {
@@ -281,58 +410,68 @@ function renderFavorites() {
 
     container.innerHTML = '';
     favoriteStations.forEach(station => {
-        const btn = document.createElement('div');
-        btn.className = 'btn';
-        btn.style.position = 'relative';
-        btn.style.flexDirection = 'column';
-        btn.style.alignItems = 'flex-start';
-        btn.style.paddingRight = '40px'; // Space for delete button
+        const card = document.createElement('div');
+        card.className = 'fav-card';
 
-        // Logo handling
-        let logoHtml = '';
+        // Image / placeholder
+        let imageHtml;
         if (station.favicon) {
-            logoHtml = `<img src="${station.favicon}" style="width: 24px; height: 24px; object-fit: contain; margin-bottom: 8px;" onerror="this.style.display='none'">`;
+            imageHtml = `<div class="fav-card-image"><img src="${station.favicon}" alt="" onerror="this.parentElement.innerHTML='📻'"></div>`;
+        } else {
+            imageHtml = `<div class="fav-card-image">📻</div>`;
         }
 
-        // Country flag handling
+        // Country flag
         let flagHtml = '';
         if (station.countrycode) {
             const countryCode = station.countrycode.toUpperCase();
-            // Convert country code to flag emoji using regional indicator symbols
             const flag = countryCode
                 .split('')
                 .map(char => String.fromCodePoint(0x1F1E6 - 65 + char.charCodeAt(0)))
                 .join('');
-            flagHtml = `<span style="font-size:1.2rem; margin-left:4px;" title="${countryCode}">${flag}</span>`;
+            flagHtml = `<span title="${countryCode}">${flag}</span>`;
         }
 
-        btn.innerHTML = `
-            <div style="display:flex; align-items:center; gap:8px;">${logoHtml} <span>${station.name}</span>${flagHtml}</div>
-            <div style="position:absolute; top:8px; right:8px; display:flex; gap:4px;">
-                <button class="info-fav btn-icon" style="padding:4px 8px; font-size:1rem;" title="Station Info">ℹ️</button>
-                <button class="delete-fav btn-icon" style="padding:4px 8px; font-size:1rem;" title="Remove">✕</button>
+        // Bitrate badge
+        const bitrate = station.bitrate ? `${station.bitrate}k` : '';
+
+        card.innerHTML = `
+            ${imageHtml}
+            <div class="fav-card-body">
+                <div class="fav-card-name" title="${station.name}">${station.name}</div>
+                <div class="fav-card-meta">${flagHtml}${bitrate ? `<span>${bitrate}</span>` : ''}</div>
+            </div>
+            <div class="fav-card-actions">
+                <button class="btn-play" title="Play station">▶</button>
+                <button class="btn-info" title="Station info">ℹ️</button>
+                <button class="btn-delete" title="Remove">✕</button>
             </div>
         `;
 
-        // Click main area to play
-        btn.onclick = (e) => {
-            if (e.target.closest('.delete-fav') || e.target.closest('.info-fav')) return;
+        card.querySelector('.btn-play').addEventListener('click', (e) => {
+            e.stopPropagation();
             playUrl(station.url, station.name);
-        };
+        });
 
-        // Delete button
-        btn.querySelector('.delete-fav').onclick = async () => {
+        card.querySelector('.btn-info').addEventListener('click', (e) => {
+            e.stopPropagation();
+            showStationInfo(station);
+        });
+
+        card.querySelector('.btn-delete').addEventListener('click', async (e) => {
+            e.stopPropagation();
             await fetch('/api/favorites/delete', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({url: station.url})
             });
             loadFavorites();
-        };
+        });
 
-        btn.querySelector('.info-fav').onclick = () => showStationInfo(station);
+        // Clicking the card body also plays
+        card.addEventListener('click', () => playUrl(station.url, station.name));
 
-        container.appendChild(btn);
+        container.appendChild(card);
     });
 }
 
@@ -420,11 +559,10 @@ function renderResults(data) {
 }
 
 async function playUrl(url, name) {
-    // Update header immediately with station name
-    const headerEl = document.getElementById('current-station');
-    if (headerEl && name) {
-        headerEl.textContent = name;
-    }
+    currentSource = 'NETWORK';
+    currentStationName = name || currentStationName;
+    currentRadioTrack = '';
+    setHeaderDisplay(currentStationName || 'Radio');
 
     // Switch AVR to Radio/NETWORK input first
     try {
@@ -446,8 +584,8 @@ async function playUrl(url, name) {
         console.log("Play result:", data);
 
         if (data.status === 'success') {
-             currentPlayingUrl = url; // Track current
-             // Single delayed status update
+             currentPlayingUrl = url;
+             startRadioMetadataPolling();
              setTimeout(updateStatus, 2000);
         } else {
             alert('Failed to play stream: ' + (data.error || 'Unknown error'));
@@ -462,27 +600,11 @@ async function playUrl(url, name) {
     }
 }
 
-async function resumeRadio() {
-    // Update current input and show radio section
+function resumeRadio() {
+    // Show the radio section — AVR input only switches when user actually plays a station
     currentInput = 'NETWORK';
     showInputSection('NETWORK');
-
-    try {
-        const res = await fetch('/api/last_played');
-        if (res.ok) {
-            const data = await res.json();
-            if (data.url) {
-                console.log("Resuming last station:", data.name);
-                playUrl(data.url, data.name);
-                return;
-            }
-        }
-    } catch (e) {
-        console.error("Failed to fetch last played", e);
-    }
-
-    // Fallback: Alert user
-    alert("No last played station found. Please select a station from the list first.");
+    updateStatus();
 }
 
 
@@ -579,49 +701,39 @@ async function updateStatus() {
              }
         }
 
-        // Now Playing Logic and Header Update
-        let displayText = 'DENON AVR';
-        let nowPlaying = '-';
+        currentSource = data.source || null;
 
-        if (data.artist && data.title) {
-            nowPlaying = `${data.artist} - ${data.title}`;
-            displayText = nowPlaying;
-        } else if (data.station) {
-            nowPlaying = data.station;
-            displayText = data.station;
-        } else if (data.name) {
-             nowPlaying = data.name; // Fallback to AVR display name
-        }
-
-        // Show current station when Radio/NET is active, otherwise show input
-        if (data.source === 'NET' || data.source === 'IRADIO') {
-            if (displayText !== 'DENON AVR') {
-                // Already set from nowPlaying
+        if (isRadioSource(currentSource)) {
+            if (data.station) {
+                currentStationName = data.station;
             } else {
-                displayText = 'Radio';
+                const lastPlayed = await loadLastPlayedStation();
+                if (lastPlayed?.name) {
+                    currentStationName = lastPlayed.name;
+                }
             }
-        } else if (data.source) {
-            // Show the input name
-            displayText = data.source;
-        }
 
-        // Update header
-        const headerEl = document.getElementById('current-station');
-        if (headerEl) {
-            headerEl.textContent = displayText;
-        }
+            if (data.url) {
+                currentPlayingUrl = data.url;
+            }
 
-        // We could create a dedicated 'Now Playing' element in the status card if requested.
-        // User asked: "Also show playing information on the webinterface"
-        // Let's reuse 'Source' or add a new line. The mock only has Power/Source/Volume.
-        // Let's append to Source for now or replace Source if it's NET/Radio.
+            updateRadioHeader();
+            startRadioMetadataPolling();
+        } else {
+            stopRadioMetadataPolling();
 
-        const sourceDisplay = document.getElementById('status-source');
-        if (sourceDisplay) {
-            if (data.source === 'NET' || data.source === 'IRADIO') {
-                 sourceDisplay.innerHTML = `<strong>${data.source}</strong><br><span style="font-size:0.9em; var(--accent);">${nowPlaying}</span>`;
-            } else {
-                 sourceDisplay.textContent = data.source;
+            let displayText = 'DENON AVR';
+            if (data.source) {
+                displayText = data.source;
+            } else if (data.name) {
+                displayText = data.name;
+            }
+
+            setHeaderDisplay(displayText);
+
+            const sourceDisplay = document.getElementById('status-source');
+            if (sourceDisplay) {
+                sourceDisplay.textContent = data.source || '-';
             }
         }
 
@@ -648,6 +760,8 @@ async function callApi(url) {
 // ============ SPOTIFY INTEGRATION ============
 
 let currentSpotifyPlaylist = null;
+let allSpotifyPlaylists = [];
+let currentSpotifySort = 'name-asc';
 
 // Show/hide input sections based on selected source
 function showInputSection(source) {
@@ -809,61 +923,123 @@ async function loadSpotifyPlaylists() {
     spotifyContent.innerHTML = '<div style="text-align: center; padding: 20px;">Loading playlists...</div>';
 
     try {
-        const res = await fetch('/api/spotify/playlists');
-        const playlists = await res.json();
+        const [playlistsRes, recentsRes] = await Promise.all([
+            fetch('/api/spotify/playlists'),
+            fetch('/api/spotify/recently_played_contexts')
+        ]);
+
+        const playlists = await playlistsRes.json();
 
         if (playlists.error) {
-            spotifyContent.innerHTML = `
-                <div style="text-align: center; color: var(--error); padding: 20px;">
-                    ${playlists.error}
-                </div>
-            `;
+            spotifyContent.innerHTML = `<div style="text-align: center; color: var(--error); padding: 20px;">${playlists.error}</div>`;
             return;
         }
 
         if (!playlists.length) {
-            spotifyContent.innerHTML = `
-                <div style="text-align: center; color: var(--text-secondary); padding: 20px;">
-                    No playlists found.
-                </div>
-            `;
+            spotifyContent.innerHTML = `<div style="text-align: center; color: var(--text-secondary); padding: 20px;">No playlists found.</div>`;
             return;
         }
 
-        // Render playlists in a grid
-        let html = '<div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px;">';
+        let recents = { recent_contexts: [] };
+        if (recentsRes.ok) {
+            recents = await recentsRes.json();
+            if (recents.error) recents.recent_contexts = [];
+        }
 
-        playlists.forEach(playlist => {
-            const imgHtml = playlist.image_url
-                ? `<img src="${playlist.image_url}" style="width: 100%; height: 150px; object-fit: cover; border-radius: 8px; margin-bottom: 8px;" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22150%22 height=%22150%22><rect fill=%22%233a3a3a%22 width=%22150%22 height=%22150%22/><text x=%2250%%22 y=%2250%%22 font-family=%22Arial%22 font-size=%2220%22 fill=%22%23666%22 text-anchor=%22middle%22 dy=%22.3em%22>🎵</text></svg>'">`
-                : '<div style="width: 100%; height: 150px; background: var(--input-bg); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 3rem; margin-bottom: 8px;">💚</div>';
-
-            html += `
-                <div class="btn" onclick="showSpotifyPlaylist('${playlist.id}', '${playlist.name.replace(/'/g, "\\'")}', '${playlist.uri || ''}', ${playlist.tracks_total})"
-                     style="flex-direction: column; align-items: stretch; padding: 0; overflow: hidden; cursor: pointer;">
-                    ${imgHtml}
-                    <div style="padding: 12px;">
-                        <div style="font-weight: 600; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${playlist.name}">
-                            ${playlist.name}
-                        </div>
-                        <div style="font-size: 0.85rem; color: var(--text-secondary);">
-                            ${playlist.tracks_total} tracks
-                        </div>
-                    </div>
-                </div>
-            `;
+        // Attach lastPlayedRank based on presence in recent_contexts (lower is more recent)
+        // If not found in recents, it gets a high rank (999) + its original index to maintain a stable fallback order
+        allSpotifyPlaylists = playlists.map((p, index) => {
+            let rank = recents.recent_contexts.indexOf(p.uri);
+            if (rank === -1) {
+                rank = 999 + index; // Fallback to default spotify order
+            }
+            return { ...p, lastPlayedRank: rank };
         });
 
-        html += '</div>';
-        spotifyContent.innerHTML = html;
+        currentSpotifySort = 'last-played';
+        renderSpotifyPlaylists();
     } catch (e) {
         console.error("Failed to load Spotify playlists", e);
-        spotifyContent.innerHTML = `
-            <div style="text-align: center; color: var(--error); padding: 20px;">
-                Failed to load playlists.
+        spotifyContent.innerHTML = `<div style="text-align: center; color: var(--error); padding: 20px;">Failed to load playlists.</div>`;
+    }
+}
+
+function sortSpotifyPlaylists(sortKey) {
+    if (sortKey === 'name') {
+        currentSpotifySort = currentSpotifySort === 'name-asc' ? 'name-desc' : 'name-asc';
+    } else if (sortKey === 'tracks') {
+        currentSpotifySort = currentSpotifySort === 'tracks-desc' ? 'tracks-asc' : 'tracks-desc';
+    } else {
+        currentSpotifySort = 'last-played';
+    }
+    renderSpotifyPlaylists();
+}
+
+function renderSpotifyPlaylists() {
+    const spotifyContent = document.getElementById('spotify-content');
+
+    // Sort a copy
+    const sorted = [...allSpotifyPlaylists];
+    if (currentSpotifySort === 'name-asc') {
+        sorted.sort((a, b) => a.name.localeCompare(b.name));
+    } else if (currentSpotifySort === 'name-desc') {
+        sorted.sort((a, b) => b.name.localeCompare(a.name));
+    } else if (currentSpotifySort === 'tracks-asc') {
+        sorted.sort((a, b) => a.tracks_total - b.tracks_total);
+    } else if (currentSpotifySort === 'tracks-desc') {
+        sorted.sort((a, b) => b.tracks_total - a.tracks_total);
+    } else if (currentSpotifySort === 'last-played') {
+        sorted.sort((a, b) => a.lastPlayedRank - b.lastPlayedRank);
+    }
+
+    // Sort toolbar
+    let nameLabel = 'Name';
+    if (currentSpotifySort === 'name-asc') nameLabel = 'Name (A→Z)';
+    if (currentSpotifySort === 'name-desc') nameLabel = 'Name (Z→A)';
+
+    let tracksLabel = 'Tracks';
+    if (currentSpotifySort === 'tracks-desc') tracksLabel = 'Tracks ↓';
+    if (currentSpotifySort === 'tracks-asc') tracksLabel = 'Tracks ↑';
+
+    const sortOptions = [
+        { key: 'last-played', label: 'Last Played', isActive: currentSpotifySort === 'last-played' },
+        { key: 'name',        label: nameLabel,     isActive: currentSpotifySort.startsWith('name') },
+        { key: 'tracks',      label: tracksLabel,   isActive: currentSpotifySort.startsWith('tracks') },
+    ];
+
+    let toolbarHtml = '<div class="sort-bar"><label>Sort:</label>';
+    sortOptions.forEach(opt => {
+        const activeClass = opt.isActive ? ' active' : '';
+        toolbarHtml += `<button class="sort-btn${activeClass}" onclick="sortSpotifyPlaylists('${opt.key}')">${opt.label}</button>`;
+    });
+    toolbarHtml += '</div>';
+
+    // Grid
+    let gridHtml = '<div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px;">';
+
+    sorted.forEach(playlist => {
+        const imgHtml = playlist.image_url
+            ? `<img src="${playlist.image_url}" style="width: 100%; height: 150px; object-fit: cover; border-radius: 8px; margin-bottom: 8px;" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22150%22 height=%22150%22><rect fill=%22%233a3a3a%22 width=%22150%22 height=%22150%22/><text x=%2250%%22 y=%2250%%22 font-family=%22Arial%22 font-size=%2220%22 fill=%22%23666%22 text-anchor=%22middle%22 dy=%22.3em%22>🎵</text></svg>'">`
+            : '<div style="width: 100%; height: 150px; background: var(--input-bg); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 3rem; margin-bottom: 8px;">💚</div>';
+
+        gridHtml += `
+            <div class="btn" onclick="showSpotifyPlaylist('${playlist.id}', '${playlist.name.replace(/'/g, "\\'")}', '${playlist.uri || ''}', ${playlist.tracks_total})"
+                 style="flex-direction: column; align-items: stretch; padding: 0; overflow: hidden; cursor: pointer;">
+                ${imgHtml}
+                <div style="padding: 12px;">
+                    <div style="font-weight: 600; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${playlist.name}">
+                        ${playlist.name}
+                    </div>
+                    <div style="font-size: 0.85rem; color: var(--text-secondary);">
+                        ${playlist.tracks_total} tracks
+                    </div>
+                </div>
             </div>
         `;
-    }
+    });
+
+    gridHtml += '</div>';
+    spotifyContent.innerHTML = toolbarHtml + gridHtml;
 }
 
 async function showSpotifyPlaylist(playlistId, playlistName, playlistUri, trackCount) {
@@ -976,11 +1152,7 @@ async function playSpotifyPlaylist(playlistUri, playlistName) {
 
         if (data.status === 'success') {
             console.log('Spotify playback started');
-            // Update header to show Spotify is playing
-            const headerEl = document.getElementById('current-station');
-            if (headerEl) {
-                headerEl.textContent = `🎵 ${playlistName}`;
-            }
+            setHeaderDisplay(`🎵 ${playlistName}`);
             // Update status
             setTimeout(updateStatus, 2000);
         } else {
@@ -1004,10 +1176,7 @@ async function playSpotifyTrack(trackUris, trackName) {
 
         if (data.status === 'success') {
             console.log('Spotify track playing');
-            const headerEl = document.getElementById('current-station');
-            if (headerEl) {
-                headerEl.textContent = trackName;
-            }
+            setHeaderDisplay(trackName);
             setTimeout(updateStatus, 2000);
         } else {
             alert(`Error: ${data.error || 'Failed to play track'}`);

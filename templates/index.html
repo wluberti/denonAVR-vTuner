@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/style.css?v=1.1">
+    <link rel="stylesheet" href="/static/style.css?v=1.4">
 </head>
 <body>
     <!-- Fixed Volume Bar (Top) -->
@@ -30,8 +30,11 @@
     </div>
 
     <div class="container">
-        <div class="header" style="display: flex; justify-content: space-between; align-items: center;">
-            <h1 id="current-station">DENON AVR</h1>
+        <div class="header" style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;">
+            <div class="header-copy">
+                <h1 id="current-station">DENON AVR</h1>
+                <div id="current-track" class="header-subtitle" hidden></div>
+            </div>
             <div style="display: flex; gap: 8px;">
                 <button id="refresh-btn" class="btn-icon" title="Refresh Status">🔄</button>
                 <button id="theme-toggle" class="btn-small" style="background: transparent; color: var(--text-primary); font-size: 1.2rem;">
@@ -190,6 +193,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=1.1"></script>
+    <script src="/static/app.js?v=1.5"></script>
 </body>
 </html>

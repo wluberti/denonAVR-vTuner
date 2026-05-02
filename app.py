@@ -23,7 +23,7 @@ DEBUG = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")
-SPOTIFY_SCOPE = "user-read-playback-state user-modify-playback-state user-read-currently-playing playlist-read-private playlist-read-collaborative user-library-read"
+SPOTIFY_SCOPE = "user-read-playback-state user-modify-playback-state user-read-currently-playing playlist-read-private playlist-read-collaborative user-library-read user-read-recently-played"
 SPOTIFY_TOKENS_FILE = os.path.join(os.path.dirname(__file__), "spotify_tokens.json")
 
 def log_debug(msg):
@@ -32,6 +32,7 @@ def log_debug(msg):
 
 # State persistence
 LAST_PLAYED_FILE = os.path.join(os.path.dirname(__file__), "last_played.json")
+RADIO_SOURCES = {"NET", "IRADIO", "NETWORK"}
 
 def save_last_played(url, name):
     try:
@@ -49,6 +50,50 @@ def get_last_played():
     except Exception as e:
         log_debug(f"Failed to load last played: {e}")
     return None
+
+def normalize_now_playing(value):
+    if not value:
+        return None
+
+    cleaned = value.replace("\x00", "").strip()
+    if not cleaned or cleaned.lower() == "unknown":
+        return None
+
+    return cleaned
+
+def split_now_playing(value):
+    normalized = normalize_now_playing(value)
+    if not normalized or " - " not in normalized:
+        return None, None
+
+    artist, title = normalized.split(" - ", 1)
+    artist = artist.strip()
+    title = title.strip()
+
+    if not artist or not title:
+        return None, None
+
+    return artist, title
+
+def get_current_radio_state():
+    last_played = get_last_played() or {}
+    if not last_played.get("url"):
+        return {}
+
+    info = get_stream_metadata(last_played["url"])
+    now_playing = normalize_now_playing(info.get("now_playing"))
+    artist, title = split_now_playing(now_playing)
+
+    return {
+        "url": last_played.get("url"),
+        "station_name": last_played.get("name"),
+        "server_name": info.get("server_name"),
+        "genre": info.get("genre"),
+        "bitrate": info.get("bitrate"),
+        "now_playing": now_playing,
+        "artist": artist,
+        "title": title
+    }
 
 def send_avr_command(command):
     """Send command to AVR via HTTP API"""
@@ -105,6 +150,14 @@ def status():
         data = get_avr_status()
         if data is None:
             return jsonify({"error": "Failed to get AVR status"}), 500
+
+        if data.get("source") in RADIO_SOURCES:
+            last_played = get_last_played() or {}
+            if last_played.get("name"):
+                data["station"] = last_played["name"]
+            if last_played.get("url"):
+                data["url"] = last_played["url"]
+
         return jsonify(data)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -299,7 +352,15 @@ def stream_proxy():
     Proxy HTTPS streams to HTTP for older AVRs.
     Exposed as .mp3 to satisfy DLNA requirements.
     """
-    url = request.args.get('url')
+    # Extract the full URL from the original request line to avoid breaking URLs with query parameters
+    # request.args.get('url') will truncate at the first '&' in the target URL.
+    try:
+        url = request.url.split('url=', 1)[1]
+        import urllib.parse
+        url = urllib.parse.unquote(url)
+    except IndexError:
+        url = None
+
     if not url:
         return "Missing url", 400
 
@@ -404,6 +465,11 @@ def get_stream_metadata(stream_url):
                     except:
                         pass
 
+        info["now_playing"] = normalize_now_playing(info.get("now_playing")) or "Unknown"
+        artist, title = split_now_playing(info["now_playing"])
+        info["artist"] = artist
+        info["title"] = title
+
         r.close()
         return info
 
@@ -419,6 +485,10 @@ def api_metadata():
 
     info = get_stream_metadata(url)
     return jsonify(info)
+
+@app.route('/api/radio_now_playing')
+def api_radio_now_playing():
+    return jsonify(get_current_radio_state())
 
 def discover_upnp_location(timeout=3):
     """
@@ -522,9 +592,6 @@ def play_url():
 
     stream_url = request.args.get('url')
     station_name = request.args.get('name', 'vTuner Stream')
-
-    if stream_url:
-        save_last_played(stream_url, station_name)
 
     if not stream_url:
         return jsonify({"error": "Missing 'url' parameter"}), 400
@@ -675,6 +742,7 @@ def play_url():
         except Exception as e:
             log_debug(f"Could not fetch NetAudio Status: {e}")
 
+        save_last_played(stream_url, station_name)
         return jsonify({"status": "success", "played": stream_url, "control_url": control_url})
 
     except Exception as e:
@@ -823,6 +891,27 @@ def spotify_playlists():
         return jsonify(playlists)
     except Exception as e:
         log_debug(f"Error fetching playlists: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/spotify/recently_played_contexts')
+def spotify_recently_played_contexts():
+    """Get the URIs of recently played contexts (like playlists) to derive 'last played' sorting"""
+    sp = get_spotify_client()
+    if not sp:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    try:
+        results = sp.current_user_recently_played(limit=50)
+        recent_contexts = []
+        for item in results.get('items', []):
+            context = item.get('context')
+            if context and context.get('type') == 'playlist' and context.get('uri'):
+                uri = context['uri']
+                if uri not in recent_contexts:
+                    recent_contexts.append(uri)
+        return jsonify({"recent_contexts": recent_contexts})
+    except Exception as e:
+        log_debug(f"Error fetching recently played context: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/spotify/playlist/<playlist_id>/tracks')
