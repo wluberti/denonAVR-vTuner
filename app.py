@@ -5,6 +5,9 @@ import os
 import socket
 import html
 import json
+import time
+import threading
+from urllib.parse import quote, unquote, urljoin
 import xml.etree.ElementTree as ET
 from dotenv import load_dotenv
 import spotipy
@@ -15,9 +18,17 @@ load_dotenv()
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", os.urandom(24))
 
+def get_env_int(name, default):
+    try:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
 # Configuration
 DENON_IP = os.getenv("DENON_IP")
 DEBUG = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
+DENON_DISPLAY_METADATA = os.getenv("DENON_DISPLAY_METADATA", "true").lower() in ("true", "1", "yes")
+DENON_DISPLAY_METADATA_UPDATE_INTERVAL = get_env_int("DENON_DISPLAY_METADATA_UPDATE_INTERVAL", 10)
 
 # Spotify Configuration
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
@@ -33,10 +44,15 @@ def log_debug(msg):
 # State persistence
 LAST_PLAYED_FILE = os.path.join(os.path.dirname(__file__), "last_played.json")
 RADIO_SOURCES = {"NET", "IRADIO", "NETWORK"}
+_AV_TRANSPORT_CONTROL_URL = None
+_LAST_DENON_DISPLAY_UPDATE = {"url": None, "title": None, "at": 0}
+_DENON_DISPLAY_UPDATE_LOCK = threading.Lock()
 
-def save_last_played(url, name):
+def save_last_played(url, name, playback_url=None):
     try:
         data = {"url": url, "name": name}
+        if playback_url and playback_url != url:
+            data["playback_url"] = playback_url
         with open(LAST_PLAYED_FILE, "w") as f:
             json.dump(data, f)
     except Exception as e:
@@ -75,17 +91,46 @@ def split_now_playing(value):
 
     return artist, title
 
+def unwrap_proxy_url(url):
+    if not url:
+        return url
+
+    if "/stream.mp3?url=" not in url:
+        return url
+
+    return unquote(url.split("url=", 1)[1])
+
+def get_playback_url(stream_url):
+    if not stream_url or not stream_url.lower().startswith("https://"):
+        return stream_url
+
+    local_ip = os.getenv("HOST_IP")
+    if not local_ip:
+        local_ip = get_local_ip()
+
+    host_port = os.getenv("HOST_PORT", "5000")
+    log_debug(f"Detected Local IP: {local_ip}, Port: {host_port}")
+
+    proxy_url = f"http://{local_ip}:{host_port}/stream.mp3?url={quote(stream_url, safe='')}"
+    log_debug(f"Rewriting HTTPS url to HTTP Proxy: {proxy_url}")
+    return proxy_url
+
+def get_denon_display_title(station_name, now_playing=None):
+    return normalize_now_playing(now_playing) or station_name or "vTuner Stream"
+
 def get_current_radio_state():
     last_played = get_last_played() or {}
     if not last_played.get("url"):
         return {}
 
-    info = get_stream_metadata(last_played["url"])
+    stream_url = unwrap_proxy_url(last_played["url"])
+    info = get_stream_metadata(stream_url)
     now_playing = normalize_now_playing(info.get("now_playing"))
     artist, title = split_now_playing(now_playing)
 
     return {
-        "url": last_played.get("url"),
+        "url": stream_url,
+        "playback_url": last_played.get("playback_url"),
         "station_name": last_played.get("name"),
         "server_name": info.get("server_name"),
         "genre": info.get("genre"),
@@ -356,8 +401,7 @@ def stream_proxy():
     # request.args.get('url') will truncate at the first '&' in the target URL.
     try:
         url = request.url.split('url=', 1)[1]
-        import urllib.parse
-        url = urllib.parse.unquote(url)
+        url = unquote(url)
     except IndexError:
         url = None
 
@@ -488,7 +532,9 @@ def api_metadata():
 
 @app.route('/api/radio_now_playing')
 def api_radio_now_playing():
-    return jsonify(get_current_radio_state())
+    radio_state = get_current_radio_state()
+    schedule_denon_display_update(radio_state)
+    return jsonify(radio_state)
 
 def discover_upnp_location(timeout=3):
     """
@@ -548,13 +594,190 @@ def get_control_url(location_url):
             if "AVTransport" in service_type:
                 control_path = service.find("controlURL").text
                 # If path is relative, join with base URL
-                from urllib.parse import urljoin
                 return urljoin(location_url, control_path)
 
     except Exception as e:
         print(f"Failed to get control URL: {e}")
 
     return None
+
+def discover_avtransport_control_url():
+    global _AV_TRANSPORT_CONTROL_URL
+
+    if _AV_TRANSPORT_CONTROL_URL:
+        return _AV_TRANSPORT_CONTROL_URL
+
+    control_url = None
+
+    log_debug(f"Discovering UPnP services for {DENON_IP}...")
+    location = discover_upnp_location()
+    if location:
+        log_debug(f"Found Device Description at: {location}")
+        control_url = get_control_url(location)
+        log_debug(f"Discovered Control URL: {control_url}")
+
+    if not control_url:
+        log_debug("SSDP failed or yielded no result. Starting manual scan...")
+
+        common_ports = [8080, 80, 55000, 38067]
+        desc_paths = ["/description.xml", "/upnp/desc/aios_device/aios_device.xml", "/DeviceDescription.xml"]
+
+        for port in common_ports:
+            for path in desc_paths:
+                try:
+                    test_url = f"http://{DENON_IP}:{port}{path}"
+                    log_debug(f"Scanning {test_url} ...")
+                    r = requests.get(test_url, timeout=1)
+                    if r.status_code == 200:
+                        log_debug(f"Found description at {test_url}")
+                        control_url = get_control_url(test_url)
+                        if control_url:
+                            break
+                except Exception as e:
+                    log_debug(f"Scan error for {test_url}: {e}")
+            if control_url:
+                break
+
+        if not control_url:
+            log_debug("Manual scan failed. Trying fallback to port 8080 direct control...")
+            control_url = f"http://{DENON_IP}:8080/AVTransport/control"
+
+    _AV_TRANSPORT_CONTROL_URL = control_url
+    return control_url
+
+def build_didl_lite(stream_url, station_name, display_title=None, artist=None):
+    display_title = get_denon_display_title(station_name, display_title)
+    escaped_station = html.escape(station_name or "Radio")
+    escaped_title = html.escape(display_title)
+    escaped_stream_url = html.escape(stream_url, quote=False)
+
+    metadata = [
+        '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">',
+        '<item id="0" parentID="0" restricted="1">',
+        f"<dc:title>{escaped_title}</dc:title>",
+    ]
+
+    if artist:
+        escaped_artist = html.escape(artist)
+        metadata.append(f"<dc:creator>{escaped_artist}</dc:creator>")
+        metadata.append(f"<upnp:artist>{escaped_artist}</upnp:artist>")
+
+    metadata.extend([
+        f"<upnp:album>{escaped_station}</upnp:album>",
+        "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>",
+        f'<res protocolInfo="http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000">{escaped_stream_url}</res>',
+        "</item>",
+        "</DIDL-Lite>",
+    ])
+
+    return "\n".join(metadata)
+
+def send_avtransport_uri(control_url, playback_url, station_name, display_title=None, artist=None):
+    didl_lite = build_didl_lite(playback_url, station_name, display_title, artist)
+    escaped_didl = html.escape(didl_lite)
+    escaped_playback_url = html.escape(playback_url, quote=False)
+
+    soap_body = f"""<?xml version="1.0" encoding="utf-8"?>
+        <s:Envelope s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/" xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+            <s:Body>
+                <u:SetAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+                    <InstanceID>0</InstanceID>
+                    <CurrentURI>{escaped_playback_url}</CurrentURI>
+                    <CurrentURIMetaData>{escaped_didl}</CurrentURIMetaData>
+                </u:SetAVTransportURI>
+            </s:Body>
+        </s:Envelope>"""
+
+    headers = {
+        'Content-Type': 'text/xml; charset="utf-8"',
+        'SOAPAction': '"urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI"'
+    }
+
+    log_debug(f"Sending SetAVTransportURI to {control_url} with title: {display_title or station_name}")
+    resp1 = requests.post(control_url, data=soap_body, headers=headers, timeout=5)
+    log_debug(f"SetAVTransportURI Response: {resp1.status_code} {resp1.text}")
+    if resp1.status_code >= 400:
+        raise RuntimeError(f"SetAVTransportURI failed with HTTP {resp1.status_code}")
+
+    play_body = """<?xml version="1.0" encoding="utf-8"?>
+        <s:Envelope s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/" xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+            <s:Body>
+                <u:Play xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+                    <InstanceID>0</InstanceID>
+                    <Speed>1</Speed>
+                </u:Play>
+            </s:Body>
+        </s:Envelope>"""
+
+    headers['SOAPAction'] = '"urn:schemas-upnp-org:service:AVTransport:1#Play"'
+    log_debug(f"Sending Play to {control_url}...")
+    resp2 = requests.post(control_url, data=play_body, headers=headers, timeout=5)
+    log_debug(f"Play Response: {resp2.status_code} {resp2.text}")
+    if resp2.status_code >= 400:
+        raise RuntimeError(f"Play failed with HTTP {resp2.status_code}")
+
+    return resp1, resp2
+
+def remember_denon_display_update(playback_url, display_title):
+    _LAST_DENON_DISPLAY_UPDATE["url"] = playback_url
+    _LAST_DENON_DISPLAY_UPDATE["title"] = display_title
+    _LAST_DENON_DISPLAY_UPDATE["at"] = time.time()
+
+def maybe_update_denon_display(radio_state):
+    if not DENON_IP or not DENON_DISPLAY_METADATA:
+        return
+
+    now_playing = normalize_now_playing(radio_state.get("now_playing"))
+    if not now_playing:
+        return
+
+    station_name = radio_state.get("station_name") or "Radio"
+    display_title = get_denon_display_title(station_name, now_playing)
+    stream_url = radio_state.get("url")
+    playback_url = radio_state.get("playback_url") or get_playback_url(stream_url)
+
+    if not playback_url:
+        return
+
+    last_update_at = _LAST_DENON_DISPLAY_UPDATE.get("at") or 0
+    if (
+        _LAST_DENON_DISPLAY_UPDATE.get("url") == playback_url
+        and _LAST_DENON_DISPLAY_UPDATE.get("title") == display_title
+    ):
+        return
+
+    if time.time() - last_update_at < DENON_DISPLAY_METADATA_UPDATE_INTERVAL:
+        return
+
+    try:
+        control_url = discover_avtransport_control_url()
+        artist, _ = split_now_playing(now_playing)
+        send_avtransport_uri(control_url, playback_url, station_name, display_title, artist)
+        remember_denon_display_update(playback_url, display_title)
+    except Exception as e:
+        log_debug(f"Failed to update Denon display metadata: {e}")
+
+def run_denon_display_update(radio_state):
+    with _DENON_DISPLAY_UPDATE_LOCK:
+        maybe_update_denon_display(radio_state)
+
+def schedule_denon_display_update(radio_state):
+    if not DENON_IP or not DENON_DISPLAY_METADATA:
+        return
+
+    if _DENON_DISPLAY_UPDATE_LOCK.locked():
+        return
+
+    now_playing = normalize_now_playing(radio_state.get("now_playing"))
+    if not now_playing:
+        return
+
+    thread = threading.Thread(
+        target=run_denon_display_update,
+        args=(dict(radio_state),),
+        daemon=True
+    )
+    thread.start()
 
 @app.route('/api/search')
 def search_stations():
@@ -599,138 +822,17 @@ def play_url():
     try:
         log_debug(f"play_url called with url={stream_url}")
 
-        # Discovery Strategy:
-        # 1. Try common ports/paths first (Fast path)
-        # 2. If fail, run SSDP discovery (Robust path)
-
-        control_url = None
-
-        # Fast path 1: Standard 8080 (already tried and failed for user)
-        # Fast path 2: Port 80
-
-        # Let's try SSDP immediately since 8080 failed
-        log_debug(f"Discovering UPnP services for {DENON_IP}...")
-        location = discover_upnp_location()
-        if location:
-            log_debug(f"Found Device Description at: {location}")
-            control_url = get_control_url(location)
-            log_debug(f"Discovered Control URL: {control_url}")
-
-        if not control_url:
-            # Fallback: Manual Port/Path Scan
-            log_debug("SSDP failed or yielded no result. Starting manual scan...")
-
-            # Common ports for Denon/Marantz UPnP
-            common_ports = [8080, 80, 55000, 38067]
-            # Common paths for UPnP description
-            desc_paths = ["/description.xml", "/upnp/desc/aios_device/aios_device.xml", "/DeviceDescription.xml"]
-
-            # Common explicit control URLs (skip description parsing if we hit these directly)
-            direct_control_paths = [
-                "/AVTransport/control",
-                "/upnp/control/AVTransport",
-                "/MediaRenderer/AVTransport/Control"
-            ]
-
-            # Step 1: detailed scan for description.xml
-            for port in common_ports:
-                for path in desc_paths:
-                    try:
-                        test_url = f"http://{DENON_IP}:{port}{path}"
-                        log_debug(f"Scanning {test_url} ...")
-                        # Low timeout for scan
-                        r = requests.get(test_url, timeout=1)
-                        if r.status_code == 200:
-                            log_debug(f"Found description at {test_url}")
-                            control_url = get_control_url(test_url)
-                            if control_url:
-                                break
-                    except Exception as e:
-                        log_debug(f"Scan error for {test_url}: {e}")
-                        pass
-                if control_url:
-                    break
-
-            # Step 2: Only if specific scan failed, try blind POST to standard 8080 control path
-            if not control_url:
-                log_debug("Manual scan failed. Trying fallback to port 8080 direct control...")
-                control_url = f"http://{DENON_IP}:8080/AVTransport/control"
-
+        control_url = discover_avtransport_control_url()
         log_debug(f"Using Control URL: {control_url}")
 
-        # ... DLNA Logic ...
+        playback_url = get_playback_url(stream_url)
+        metadata = get_stream_metadata(stream_url) if DENON_DISPLAY_METADATA else {}
+        now_playing = normalize_now_playing(metadata.get("now_playing"))
+        artist, _ = split_now_playing(now_playing)
+        display_title = get_denon_display_title(station_name, now_playing)
 
-        # PROXY LOGIC:
-        # Check if URL is HTTPS. Older Denon AVRs (like X4000) fail with HTTPS.
-        # We rewrite the URL to point to our local HTTP proxy.
-        if stream_url.lower().startswith("https://"):
-            local_ip = os.getenv("HOST_IP")
-            if not local_ip:
-                local_ip = get_local_ip()
-
-            host_port = os.getenv("HOST_PORT", "5000")
-            log_debug(f"Detected Local IP: {local_ip}, Port: {host_port}")
-
-            # If running in Docker, get_local_ip might return the container IP (172.x).
-            # The AVR cannot reach 172.x. We need the Host's LAN IP.
-            # We strongly recommend setting HOST_IP in .env if automatic detection fails.
-
-            # If we are in Docker Bridge mode, we can't easily guess the Host IP unless mapped.
-            # But the user is mapping 5000:5000.
-
-            proxy_url = f"http://{local_ip}:{host_port}/stream.mp3?url={stream_url}"
-            log_debug(f"Rewriting HTTPS url to HTTP Proxy: {proxy_url}")
-            stream_url = proxy_url
-
-        # 1. Construct DIDL-Lite Metadata
-        # This is critical for Denon AVRs to know what codec/protocol to expect.
-        didl_lite = f"""<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">
-<item id="0" parentID="0" restricted="1">
-<dc:title>{html.escape(station_name)}</dc:title>
-<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>
-<res protocolInfo="http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000">{stream_url}</res>
-</item>
-</DIDL-Lite>"""
-
-        escaped_didl = html.escape(didl_lite)
-
-        # 2. Construct SOAP Body
-        soap_body = f"""<?xml version="1.0" encoding="utf-8"?>
-        <s:Envelope s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/" xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-            <s:Body>
-                <u:SetAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
-                    <InstanceID>0</InstanceID>
-                    <CurrentURI>{stream_url}</CurrentURI>
-                    <CurrentURIMetaData>{escaped_didl}</CurrentURIMetaData>
-                </u:SetAVTransportURI>
-            </s:Body>
-        </s:Envelope>"""
-
-        headers = {
-            'Content-Type': 'text/xml; charset="utf-8"',
-            'SOAPAction': '"urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI"'
-        }
-
-        # Action 1: Set URI
-        log_debug(f"Sending SetAVTransportURI to {control_url}...")
-        resp1 = requests.post(control_url, data=soap_body, headers=headers, timeout=5)
-        log_debug(f"SetAVTransportURI Response: {resp1.status_code} {resp1.text}")
-
-        # Action 2: Play
-        play_body = """<?xml version="1.0" encoding="utf-8"?>
-        <s:Envelope s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/" xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-            <s:Body>
-                <u:Play xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
-                    <InstanceID>0</InstanceID>
-                    <Speed>1</Speed>
-                </u:Play>
-            </s:Body>
-        </s:Envelope>"""
-
-        headers['SOAPAction'] = '"urn:schemas-upnp-org:service:AVTransport:1#Play"'
-        log_debug(f"Sending Play to {control_url}...")
-        resp2 = requests.post(control_url, data=play_body, headers=headers, timeout=5)
-        log_debug(f"Play Response: {resp2.status_code} {resp2.text}")
+        send_avtransport_uri(control_url, playback_url, station_name, display_title, artist)
+        remember_denon_display_update(playback_url, display_title)
 
         # Debug: Check actual status via Denon Web Interface
         # The user mentioned http://IP/NetAudio/index.html
@@ -742,8 +844,8 @@ def play_url():
         except Exception as e:
             log_debug(f"Could not fetch NetAudio Status: {e}")
 
-        save_last_played(stream_url, station_name)
-        return jsonify({"status": "success", "played": stream_url, "control_url": control_url})
+        save_last_played(stream_url, station_name, playback_url)
+        return jsonify({"status": "success", "played": playback_url, "control_url": control_url, "display_title": display_title})
 
     except Exception as e:
         log_debug(f"Error playing URL: {e}")

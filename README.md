@@ -22,6 +22,8 @@ Since Denon/Marantz discontinued vTuner support for older AVR models (e.g., AVR-
    # DENON_IP=192.168.x.x
    # HOST_IP=192.168.x.y     <-- IP of the machine running this app
    # HOST_PORT=8800          <-- Port mapped in docker-compose
+   # DENON_DISPLAY_METADATA=true
+   # DENON_DISPLAY_METADATA_UPDATE_INTERVAL=10
    #
    # For Spotify integration (optional):
    # SPOTIFY_CLIENT_ID=your_client_id
@@ -42,3 +44,8 @@ Since Denon/Marantz discontinued vTuner support for older AVR models (e.g., AVR-
 ## Architecture
 - **Backend (Flask)**: Proxies streams (HTTPS -> HTTP), handles UPnP/DLNA commands to AVR, integrates Spotify Web API.
 - **Frontend**: HTML/JS Single Page Application for control.
+
+## Denon Display Metadata
+When `DENON_DISPLAY_METADATA=true`, the app sends live radio metadata as the DLNA title so compatible AVR displays can show the current artist and song instead of only the station name. The browser already polls metadata every few seconds; when the title changes, the backend refreshes the AVR's UPnP metadata for the current stream.
+
+Some Denon/Marantz models briefly restart network playback when metadata is refreshed. If that happens, set `DENON_DISPLAY_METADATA=false`, or increase `DENON_DISPLAY_METADATA_UPDATE_INTERVAL`.
