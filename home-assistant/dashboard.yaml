@@ -1,0 +1,28 @@
+# Lovelace card configuration for the Denon AVR vTuner replacement.
+#
+# Add this JavaScript module as a dashboard resource first:
+#   URL: http://HOST_IP:HOST_PORT/static/denon-vtuner-tile.js?v=0.1.1
+#   Resource type: JavaScript Module
+#
+# Then add this card to a dashboard in YAML mode or the raw card editor.
+
+type: custom:denon-vtuner-tile
+name: Denon AVR-X4000
+api_base_url: http://HOST_IP:HOST_PORT
+refresh_interval: 10
+station_limit: 8
+playlist_limit: 8
+resume_radio_on_select: true
+inputs:
+  - label: TV Audio
+    input: CBL/SAT
+    icon: mdi:television
+  - label: XS4ALL STB
+    input: CD
+    icon: mdi:set-top-box
+  - label: Radio
+    input: NETWORK
+    icon: mdi:radio
+  - label: Spotify
+    input: SPOTIFY
+    icon: mdi:spotify

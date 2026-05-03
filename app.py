@@ -24,11 +24,16 @@ def get_env_int(name, default):
     except (TypeError, ValueError):
         return default
 
+def get_env_list(name, default=""):
+    raw_value = os.getenv(name, default)
+    return [item.strip() for item in raw_value.split(",") if item.strip()]
+
 # Configuration
 DENON_IP = os.getenv("DENON_IP")
 DEBUG = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
 DENON_DISPLAY_METADATA = os.getenv("DENON_DISPLAY_METADATA", "true").lower() in ("true", "1", "yes")
 DENON_DISPLAY_METADATA_UPDATE_INTERVAL = get_env_int("DENON_DISPLAY_METADATA_UPDATE_INTERVAL", 10)
+HOME_ASSISTANT_CORS_ORIGINS = get_env_list("HOME_ASSISTANT_CORS_ORIGINS", "*")
 
 # Spotify Configuration
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
@@ -185,6 +190,23 @@ def get_avr_status():
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.after_request
+def add_home_assistant_cors_headers(response):
+    origin = request.headers.get("Origin")
+
+    if "*" in HOME_ASSISTANT_CORS_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin or "*"
+        response.headers["Vary"] = "Origin"
+    elif origin in HOME_ASSISTANT_CORS_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+
+    if response.headers.get("Access-Control-Allow-Origin"):
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+
+    return response
 
 @app.route('/api/status')
 def status():
@@ -1016,6 +1038,122 @@ def spotify_recently_played_contexts():
         log_debug(f"Error fetching recently played context: {e}")
         return jsonify({"error": str(e)}), 500
 
+SPOTIFY_SEARCH_TYPE_ALIASES = {
+    "song": "track",
+    "songs": "track",
+    "track": "track",
+    "tracks": "track",
+    "playlist": "playlist",
+    "playlists": "playlist",
+    "podcast": "episode",
+    "podcasts": "episode",
+    "episode": "episode",
+    "episodes": "episode",
+}
+
+def normalize_spotify_search_types(raw_value):
+    selected_types = []
+
+    for item in (raw_value or "track,playlist,episode").split(","):
+        search_type = SPOTIFY_SEARCH_TYPE_ALIASES.get(item.strip().lower())
+        if search_type and search_type not in selected_types:
+            selected_types.append(search_type)
+
+    return ",".join(selected_types or ["track", "playlist", "episode"])
+
+def first_image_url(images):
+    if not images:
+        return None
+
+    first_image = images[0]
+    if isinstance(first_image, dict):
+        return first_image.get("url")
+
+    return None
+
+@app.route('/api/spotify/search')
+def spotify_search():
+    """Search Spotify for songs, playlists, and podcast episodes."""
+    sp = get_spotify_client()
+    if not sp:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    query = request.args.get('q', '').strip()
+    if not query:
+        return jsonify([])
+
+    try:
+        limit = max(1, min(int(request.args.get('limit', 8)), 20))
+    except (TypeError, ValueError):
+        limit = 8
+
+    search_types = normalize_spotify_search_types(request.args.get('types'))
+
+    try:
+        results = sp.search(
+            q=query,
+            type=search_types,
+            limit=limit,
+            market="from_token"
+        )
+
+        items = []
+
+        for track in results.get('tracks', {}).get('items', []):
+            if not track or not track.get('uri'):
+                continue
+
+            artists = ', '.join([artist['name'] for artist in track.get('artists', [])])
+            album_images = track.get('album', {}).get('images', [])
+            items.append({
+                "type": "track",
+                "label": "Song",
+                "id": track.get('id'),
+                "name": track.get('name'),
+                "subtitle": artists,
+                "uri": track.get('uri'),
+                "image_url": first_image_url(album_images),
+                "duration_ms": track.get('duration_ms', 0),
+            })
+
+        for playlist in results.get('playlists', {}).get('items', []):
+            if not playlist or not playlist.get('uri'):
+                continue
+
+            owner = playlist.get('owner') or {}
+            tracks = playlist.get('tracks') or {}
+            items.append({
+                "type": "playlist",
+                "label": "Playlist",
+                "id": playlist.get('id'),
+                "name": playlist.get('name'),
+                "subtitle": owner.get('display_name') or "Spotify",
+                "uri": playlist.get('uri'),
+                "image_url": first_image_url(playlist.get('images')),
+                "tracks_total": tracks.get('total'),
+            })
+
+        for episode in results.get('episodes', {}).get('items', []):
+            if not episode or not episode.get('uri'):
+                continue
+
+            show = episode.get('show') or {}
+            items.append({
+                "type": "episode",
+                "label": "Podcast",
+                "id": episode.get('id'),
+                "name": episode.get('name'),
+                "subtitle": show.get('name') or episode.get('publisher') or "Podcast episode",
+                "uri": episode.get('uri'),
+                "image_url": first_image_url(episode.get('images') or show.get('images')),
+                "duration_ms": episode.get('duration_ms', 0),
+            })
+
+        return jsonify(items)
+    except Exception as e:
+        log_debug(f"Error searching Spotify: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/spotify/playlist/<playlist_id>/tracks')
 def spotify_playlist_tracks(playlist_id):
     """Get tracks from a specific playlist"""
@@ -1086,7 +1224,7 @@ def spotify_play():
 
     data = request.json
     context_uri = data.get('context_uri')  # playlist/album URI
-    track_uris = data.get('track_uris')    # specific tracks
+    track_uris = data.get('track_uris') or data.get('uris')  # specific tracks or episodes
     device_id = data.get('device_id')      # target device
 
     try:
@@ -1154,6 +1292,8 @@ def spotify_control():
         if action == 'play':
             sp.start_playback()
         elif action == 'pause':
+            sp.pause_playback()
+        elif action == 'stop':
             sp.pause_playback()
         elif action == 'next':
             sp.next_track()

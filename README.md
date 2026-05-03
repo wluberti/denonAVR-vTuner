@@ -9,6 +9,7 @@ Since Denon/Marantz discontinued vTuner support for older AVR models (e.g., AVR-
 - **Input Control**: Easy switching between TV Audio, STB, Radio, and Spotify.
 - **Radio Resume**: "Radio" button remembers and resumes the last played station.
 - **Volume Control**: Full volume control with slider and mute.
+- **Home Assistant Tile**: Custom Lovelace card for AVR controls, radio search, and Spotify search.
 - **Modern UI**: Responsive web interface with dark mode.
 
 ## Setup
@@ -24,6 +25,7 @@ Since Denon/Marantz discontinued vTuner support for older AVR models (e.g., AVR-
    # HOST_PORT=8800          <-- Port mapped in docker-compose
    # DENON_DISPLAY_METADATA=true
    # DENON_DISPLAY_METADATA_UPDATE_INTERVAL=10
+   # HOME_ASSISTANT_CORS_ORIGINS=*  <-- Or comma-separated HA origins, e.g. http://homeassistant.local:8123
    #
    # For Spotify integration (optional):
    # SPOTIFY_CLIENT_ID=your_client_id
@@ -44,6 +46,16 @@ Since Denon/Marantz discontinued vTuner support for older AVR models (e.g., AVR-
 ## Architecture
 - **Backend (Flask)**: Proxies streams (HTTPS -> HTTP), handles UPnP/DLNA commands to AVR, integrates Spotify Web API.
 - **Frontend**: HTML/JS Single Page Application for control.
+- **Home Assistant**: Optional custom Lovelace card served from `/static/denon-vtuner-tile.js`.
+
+## Home Assistant
+
+This project includes a custom tile-style Lovelace card with power, volume,
+input selection, radio station selection/search, and Spotify playlist/search
+controls.
+
+See [home-assistant/README.md](home-assistant/README.md) and
+[home-assistant/dashboard.yaml](home-assistant/dashboard.yaml).
 
 ## Denon Display Metadata
 When `DENON_DISPLAY_METADATA=true`, the app sends live radio metadata as the DLNA title so compatible AVR displays can show the current artist and song instead of only the station name. The browser already polls metadata every few seconds; when the title changes, the backend refreshes the AVR's UPnP metadata for the current stream.
