@@ -33,7 +33,7 @@ Restart the app after changing `.env`.
 In Home Assistant, go to **Settings > Dashboards > Resources** and add:
 
 ```yaml
-url: http://HOST_IP:HOST_PORT/static/denon-vtuner-tile.js?v=0.1.1
+url: http://HOST_IP:HOST_PORT/static/denon-vtuner-tile.js?v=0.1.2
 type: module
 ```
 
@@ -43,7 +43,7 @@ example `192.168.1.20:8877`.
 If Home Assistant is served over HTTPS, the browser may block an HTTP module.
 In that case, either serve this app through HTTPS/reverse proxy or copy
 `static/denon-vtuner-tile.js` to Home Assistant's `/config/www` directory and
-use `/local/denon-vtuner-tile.js?v=0.1.1` as the resource URL.
+use `/local/denon-vtuner-tile.js?v=0.1.2` as the resource URL.
 
 ## 3. Add the card
 
@@ -97,20 +97,20 @@ execute. Check these in order:
 2. Open the resource URL from the same browser/device that runs Home Assistant:
 
    ```text
-   http://HOST_IP:HOST_PORT/static/denon-vtuner-tile.js?v=0.1.1
+   http://HOST_IP:HOST_PORT/static/denon-vtuner-tile.js?v=0.1.2
    ```
 
    It should show JavaScript text. If it does not, fix `HOST_IP:HOST_PORT` to
    the address reachable from your browser, not only from the Docker host.
 
 3. In Home Assistant, add the resource as **JavaScript Module**. If it already
-   exists, update the URL to include `?v=0.1.1`, then refresh the browser.
+   exists, update the URL to include `?v=0.1.2`, then refresh the browser.
 
 4. If Home Assistant is on HTTPS and this app is on HTTP, use HTTPS for this
    app or copy the file to `/config/www` and use:
 
    ```yaml
-   url: /local/denon-vtuner-tile.js?v=0.1.1
+   url: /local/denon-vtuner-tile.js?v=0.1.2
    type: module
    ```
 

@@ -5,7 +5,7 @@ const DENON_VTUNER_DEFAULT_INPUTS = [
   { label: "Spotify", input: "SPOTIFY", icon: "mdi:spotify" },
 ];
 
-const DENON_VTUNER_TILE_VERSION = "0.1.1";
+const DENON_VTUNER_TILE_VERSION = "0.1.2";
 const DENON_VTUNER_RADIO_SOURCES = new Set(["NET", "IRADIO", "NETWORK"]);
 
 function denonVtunerEscape(value) {
@@ -41,6 +41,7 @@ class DenonVtunerTile extends HTMLElement {
     this.apiBase = "";
     this.inputs = DENON_VTUNER_DEFAULT_INPUTS;
     this.status = null;
+    this.radioNowPlaying = null;
     this.radioFavorites = [];
     this.radioResults = [];
     this.spotifyAuth = null;
@@ -183,7 +184,9 @@ class DenonVtunerTile extends HTMLElement {
     const inputKey = this.activeInput || this.currentInputKey();
 
     if (inputKey === "NETWORK") {
-      await this.loadRadioFavorites();
+      await this.loadRadioData();
+    } else {
+      this.radioNowPlaying = null;
     }
 
     if (inputKey === "SPOTIFY") {
@@ -193,6 +196,18 @@ class DenonVtunerTile extends HTMLElement {
 
   async loadRadioFavorites() {
     this.radioFavorites = await this.getJson("/api/favorites");
+  }
+
+  async loadRadioData() {
+    const [favorites, nowPlaying] = await Promise.all([
+      this.getJson("/api/favorites"),
+      this.getJson("/api/radio_now_playing").catch(() => null),
+    ]);
+
+    this.radioFavorites = favorites;
+    this.radioNowPlaying = nowPlaying && (nowPlaying.now_playing || nowPlaying.station_name)
+      ? nowPlaying
+      : null;
   }
 
   async loadSpotifyData() {
@@ -263,6 +278,27 @@ class DenonVtunerTile extends HTMLElement {
     return denonVtunerClamp(Math.round((dbVolume + 80) * 2) / 2, 0, 98);
   }
 
+  radioNowPlayingText() {
+    if (!this.radioNowPlaying) {
+      return "";
+    }
+
+    if (this.radioNowPlaying.artist && this.radioNowPlaying.title) {
+      return `${this.radioNowPlaying.artist} - ${this.radioNowPlaying.title}`;
+    }
+
+    return this.radioNowPlaying.now_playing || "";
+  }
+
+  spotifyNowPlayingText() {
+    const track = this.spotifyCurrent?.track;
+    if (!track) {
+      return "";
+    }
+
+    return [track.artists, track.name].filter(Boolean).join(" - ");
+  }
+
   render() {
     if (!this.config) {
       this.shadowRoot.innerHTML = "";
@@ -274,10 +310,10 @@ class DenonVtunerTile extends HTMLElement {
     const volume = this.absoluteVolume();
     const muted = Boolean(this.status?.muted);
     const powerOn = this.isPoweredOn();
-    const station = this.status?.station;
-    const nowPlaying = this.spotifyCurrent?.track
-      ? `${this.spotifyCurrent.track.name} - ${this.spotifyCurrent.track.artists}`
-      : "";
+    const station = this.radioNowPlaying?.station_name || this.status?.station;
+    const nowPlaying = inputKey === "NETWORK"
+      ? this.radioNowPlayingText()
+      : this.spotifyNowPlayingText();
     const subtitle = [sourceText, station, nowPlaying].filter(Boolean).join(" | ");
 
     this.shadowRoot.innerHTML = `
@@ -346,6 +382,7 @@ class DenonVtunerTile extends HTMLElement {
           <h3>Radio Stations</h3>
           <span>${this.radioFavorites.length} saved</span>
         </div>
+        ${this.renderRadioCurrent()}
         <div class="item-list">
           ${favorites.length ? favorites.map((station, index) => this.renderRadioItem(station, index, "favorite")).join("") : `
             <div class="empty">No saved stations yet. Search below to play or save one.</div>
@@ -359,6 +396,28 @@ class DenonVtunerTile extends HTMLElement {
           ${this.radioResults.map((station, index) => this.renderRadioItem(station, index, "search")).join("")}
         </div>
       </section>
+    `;
+  }
+
+  renderRadioCurrent() {
+    const station = this.radioNowPlaying?.station_name || this.status?.station || "";
+    const nowPlaying = this.radioNowPlayingText();
+
+    if (!station && !nowPlaying) {
+      return "";
+    }
+
+    return `
+      <div class="now-playing">
+        <div class="thumb placeholder">
+          <ha-icon icon="mdi:radio-tower"></ha-icon>
+        </div>
+        <div class="media-copy">
+          <strong>${denonVtunerEscape(nowPlaying || station)}</strong>
+          <span>${denonVtunerEscape(nowPlaying ? station || "Radio" : "Current station")}</span>
+        </div>
+        <span class="pill">Live</span>
+      </div>
     `;
   }
 
