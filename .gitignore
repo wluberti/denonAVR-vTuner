@@ -11,4 +11,7 @@ artifacts/
 *.log
 .DS_Store
 spotify_tokens.json
+favorites.json
+last_played.json
 
+home-assistant/lovelace.yaml

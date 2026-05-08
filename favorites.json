@@ -47,12 +47,5 @@
     "favicon": "https://i0.wp.com/www.decibel.nl/wp-content/uploads/2022/04/Eurodance.png?w=1060&ssl=1",
     "bitrate": 192,
     "countrycode": "NL"
-  },
-  {
-    "name": "Radio Decibel",
-    "url": "http://stream.decibel.nl/decibel.mp3",
-    "favicon": "https://www.decibel.nl/favicon.ico",
-    "bitrate": 192,
-    "countrycode": "NL"
   }
 ]
