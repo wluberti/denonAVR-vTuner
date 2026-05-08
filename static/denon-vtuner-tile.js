@@ -5,7 +5,7 @@ const DENON_VTUNER_DEFAULT_INPUTS = [
   { label: "Spotify", input: "SPOTIFY", icon: "mdi:spotify" },
 ];
 
-const DENON_VTUNER_TILE_VERSION = "0.1.2";
+const DENON_VTUNER_TILE_VERSION = "0.1.3";
 const DENON_VTUNER_RADIO_SOURCES = new Set(["NET", "IRADIO", "NETWORK"]);
 
 function denonVtunerEscape(value) {
@@ -184,7 +184,12 @@ class DenonVtunerTile extends HTMLElement {
     const inputKey = this.activeInput || this.currentInputKey();
 
     if (inputKey === "NETWORK") {
-      await this.loadRadioData();
+      if (this.isPoweredOn()) {
+        await this.loadRadioData();
+      } else {
+        await this.loadRadioFavorites();
+        this.radioNowPlaying = null;
+      }
     } else {
       this.radioNowPlaying = null;
     }

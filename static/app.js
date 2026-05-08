@@ -703,7 +703,7 @@ async function updateStatus() {
 
         currentSource = data.source || null;
 
-        if (isRadioSource(currentSource)) {
+        if (isPoweredOn && isRadioSource(currentSource)) {
             if (data.station) {
                 currentStationName = data.station;
             } else {

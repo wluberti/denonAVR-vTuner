@@ -187,6 +187,24 @@ def get_avr_status():
         log_debug(f"Failed to get status: {e}")
         return None
 
+def is_avr_ready_for_radio_metadata_update():
+    status = get_avr_status()
+    if not status:
+        log_debug("Skipping Denon display metadata update: AVR status unavailable")
+        return False
+
+    power_on = status.get("power") == "ON" or status.get("state") == "on"
+    if not power_on:
+        log_debug("Skipping Denon display metadata update: AVR is in standby")
+        return False
+
+    source = status.get("source")
+    if source not in RADIO_SOURCES:
+        log_debug(f"Skipping Denon display metadata update: AVR source is {source}")
+        return False
+
+    return True
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -769,6 +787,9 @@ def maybe_update_denon_display(radio_state):
         return
 
     if time.time() - last_update_at < DENON_DISPLAY_METADATA_UPDATE_INTERVAL:
+        return
+
+    if not is_avr_ready_for_radio_metadata_update():
         return
 
     try:

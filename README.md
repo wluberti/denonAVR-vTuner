@@ -58,6 +58,6 @@ See [home-assistant/README.md](home-assistant/README.md) and
 [home-assistant/dashboard.yaml](home-assistant/dashboard.yaml).
 
 ## Denon Display Metadata
-When `DENON_DISPLAY_METADATA=true`, the app sends live radio metadata as the DLNA title so compatible AVR displays can show the current artist and song instead of only the station name. The browser already polls metadata every few seconds; when the title changes, the backend refreshes the AVR's UPnP metadata for the current stream.
+When `DENON_DISPLAY_METADATA=true`, the app sends live radio metadata as the DLNA title so compatible AVR displays can show the current artist and song instead of only the station name. The browser already polls metadata every few seconds; when the title changes, the backend refreshes the AVR's UPnP metadata for the current stream, but only while the AVR reports that it is powered on and already using a radio/network source.
 
 Some Denon/Marantz models briefly restart network playback when metadata is refreshed. If that happens, set `DENON_DISPLAY_METADATA=false`, or increase `DENON_DISPLAY_METADATA_UPDATE_INTERVAL`.
