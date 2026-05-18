@@ -7,6 +7,7 @@ import html
 import json
 import time
 import threading
+import re
 from urllib.parse import quote, unquote, urljoin
 import xml.etree.ElementTree as ET
 from dotenv import load_dotenv
@@ -52,6 +53,12 @@ RADIO_SOURCES = {"NET", "IRADIO", "NETWORK"}
 _AV_TRANSPORT_CONTROL_URL = None
 _LAST_DENON_DISPLAY_UPDATE = {"url": None, "title": None, "at": 0}
 _DENON_DISPLAY_UPDATE_LOCK = threading.Lock()
+_DENON_DISPLAY_WORKER_LOCK = threading.Lock()
+_DENON_DISPLAY_WORKER_STARTED = False
+
+ICY_METADATA_READ_TIMEOUT = 6
+ICY_METADATA_MAX_BLOCKS = 4
+ICY_METADATA_READ_CHUNK_SIZE = 16384
 
 def save_last_played(url, name, playback_url=None):
     try:
@@ -490,16 +497,68 @@ def get_local_ip():
     except:
         return '0.0.0.0' # Fallback
 
+def read_stream_bytes(raw, size, deadline):
+    data = bytearray()
+
+    while len(data) < size:
+        if time.monotonic() >= deadline:
+            return None
+
+        chunk = raw.read(min(size - len(data), ICY_METADATA_READ_CHUNK_SIZE))
+        if not chunk:
+            return None
+
+        data.extend(chunk)
+
+    return bytes(data)
+
+def skip_stream_bytes(raw, size, deadline):
+    remaining = size
+
+    while remaining > 0:
+        if time.monotonic() >= deadline:
+            return False
+
+        chunk = raw.read(min(remaining, ICY_METADATA_READ_CHUNK_SIZE))
+        if not chunk:
+            return False
+
+        remaining -= len(chunk)
+
+    return True
+
+def parse_stream_title(meta_data):
+    if not meta_data:
+        return None
+
+    for encoding in ("utf-8", "latin-1"):
+        try:
+            meta_str = meta_data.decode(encoding).replace("\x00", "")
+        except UnicodeDecodeError:
+            continue
+
+        match = re.search(r"StreamTitle=(?:'([^']*)'|\"([^\"]*)\"|([^;]*));", meta_str)
+        if match:
+            title = next((group for group in match.groups() if group is not None), "")
+            return normalize_now_playing(html.unescape(title))
+
+    return None
+
 def get_stream_metadata(stream_url):
     """
     Connect to stream, get headers, and try to read ICY metadata (StreamTitle).
     """
+    r = None
     try:
         headers = {'Icy-MetaData': '1', 'User-Agent': 'VLC/3.0.0'}
-        r = requests.get(stream_url, headers=headers, stream=True, timeout=3)
+        r = requests.get(stream_url, headers=headers, stream=True, timeout=(3, 3))
 
         # Check headers
-        icy_metaint = int(r.headers.get('icy-metaint', 0))
+        try:
+            icy_metaint = int(r.headers.get('icy-metaint', 0))
+        except (TypeError, ValueError):
+            icy_metaint = 0
+
         server_name = r.headers.get('icy-name', '')
         genre = r.headers.get('icy-genre', '')
         bitrate = r.headers.get('icy-br', '')
@@ -512,54 +571,39 @@ def get_stream_metadata(stream_url):
         }
 
         if icy_metaint > 0:
-            # Read up to metaint bytes of audio
-            # r.raw.read is tricky with requests stream, use iter_content
-            # We skip 'icy_metaint' bytes of audio data to find the metadata block
+            deadline = time.monotonic() + ICY_METADATA_READ_TIMEOUT
 
-            # Read chunks until we pass metaint
-            byte_count = 0
+            for _ in range(ICY_METADATA_MAX_BLOCKS):
+                if not skip_stream_bytes(r.raw, icy_metaint, deadline):
+                    break
 
-            # We need raw socket access or careful reading.
-            # Requests iter_content(chunk_size=1) is slow.
-            # Let's try reading a larger chunk and slicing.
+                length_byte = read_stream_bytes(r.raw, 1, deadline)
+                if not length_byte:
+                    break
 
-            # Read just enough to cover the first metadata block if it's "close"
-            # Some streams send it periodically.
+                length = length_byte[0] * 16
+                if length == 0:
+                    continue
 
-            # Simplification: Read the first chunk. If metaint is small enough, we might find it.
-            # But metaint is usually 16000 or 8192 bytes.
-
-            # Let's read exactly metaint bytes
-            audio_data = r.raw.read(icy_metaint)
-
-            # Next byte is length of metadata (x 16)
-            length_byte = r.raw.read(1)
-            if length_byte:
-                length = ord(length_byte) * 16
-                if length > 0:
-                    meta_data = r.raw.read(length)
-                    # Decode and parse StreamTitle='...'
-                    try:
-                        meta_str = meta_data.decode('utf-8', errors='ignore')
-                        # Extract StreamTitle
-                        import re
-                        m = re.search(r"StreamTitle='([^']*)';", meta_str)
-                        if m:
-                            info['now_playing'] = m.group(1)
-                    except:
-                        pass
+                meta_data = read_stream_bytes(r.raw, length, deadline)
+                stream_title = parse_stream_title(meta_data)
+                if stream_title:
+                    info['now_playing'] = stream_title
+                    break
 
         info["now_playing"] = normalize_now_playing(info.get("now_playing")) or "Unknown"
         artist, title = split_now_playing(info["now_playing"])
         info["artist"] = artist
         info["title"] = title
 
-        r.close()
         return info
 
     except Exception as e:
-        print(f"Metadata fetch error: {e}")
+        log_debug(f"Metadata fetch error: {e}")
         return {}
+    finally:
+        if r:
+            r.close()
 
 @app.route('/api/metadata')
 def api_metadata():
@@ -821,6 +865,51 @@ def schedule_denon_display_update(radio_state):
         daemon=True
     )
     thread.start()
+
+def denon_display_metadata_worker():
+    sleep_seconds = max(1, DENON_DISPLAY_METADATA_UPDATE_INTERVAL)
+    log_debug(f"Started Denon display metadata worker, interval={sleep_seconds}s")
+
+    while True:
+        try:
+            if not get_last_played():
+                time.sleep(sleep_seconds)
+                continue
+
+            avr_ready = is_avr_ready_for_radio_metadata_update()
+            if not avr_ready:
+                time.sleep(sleep_seconds)
+                continue
+
+            radio_state = get_current_radio_state()
+            if radio_state:
+                run_denon_display_update(radio_state)
+        except Exception as e:
+            log_debug(f"Denon display metadata worker error: {e}")
+
+        time.sleep(sleep_seconds)
+
+def start_denon_display_metadata_worker():
+    global _DENON_DISPLAY_WORKER_STARTED
+
+    if not DENON_IP or not DENON_DISPLAY_METADATA:
+        return
+
+    with _DENON_DISPLAY_WORKER_LOCK:
+        if _DENON_DISPLAY_WORKER_STARTED:
+            return
+
+        thread = threading.Thread(
+            target=denon_display_metadata_worker,
+            daemon=True,
+            name="denon-display-metadata"
+        )
+        thread.start()
+        _DENON_DISPLAY_WORKER_STARTED = True
+
+@app.before_request
+def ensure_denon_display_metadata_worker():
+    start_denon_display_metadata_worker()
 
 @app.route('/api/search')
 def search_stations():
