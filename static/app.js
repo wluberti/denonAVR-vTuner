@@ -8,6 +8,45 @@ let radioMetadataInterval = null;
 const RADIO_SOURCES = new Set(['NET', 'IRADIO', 'NETWORK']);
 const RADIO_METADATA_INTERVAL_MS = 15000;
 
+function createElement(tagName, options = {}, children = []) {
+    const element = document.createElement(tagName);
+
+    Object.entries(options).forEach(([key, value]) => {
+        if (value === undefined || value === null) {
+            return;
+        }
+
+        if (key === 'className') {
+            element.className = value;
+        } else if (key === 'text') {
+            element.textContent = value;
+        } else if (key === 'style' && typeof value === 'object') {
+            Object.assign(element.style, value);
+        } else {
+            element.setAttribute(key, value);
+        }
+    });
+
+    children.forEach((child) => {
+        if (child !== undefined && child !== null) {
+            element.append(child);
+        }
+    });
+
+    return element;
+}
+
+function setPanelMessage(container, text, color = 'var(--text-secondary)') {
+    container.replaceChildren(createElement('div', {
+        text,
+        style: {
+            textAlign: 'center',
+            color,
+            padding: '20px'
+        }
+    }));
+}
+
 function isRadioSource(source) {
     return RADIO_SOURCES.has(source);
 }
@@ -75,7 +114,17 @@ function updateRadioHeader() {
     const sourceDisplay = document.getElementById('status-source');
     if (sourceDisplay && isRadioSource(currentSource)) {
         const detail = liveText || stationName;
-        sourceDisplay.innerHTML = `<strong>${currentSource}</strong><br><span style="font-size:0.9em; color: var(--accent);">${detail}</span>`;
+        sourceDisplay.replaceChildren(
+            createElement('strong', { text: currentSource }),
+            document.createElement('br'),
+            createElement('span', {
+                text: detail,
+                style: {
+                    fontSize: '0.9em',
+                    color: 'var(--accent)'
+                }
+            })
+        );
     }
 }
 
@@ -376,16 +425,26 @@ async function showStationInfo(station) {
         const res = await fetch(`/api/metadata?url=${encodeURIComponent(url)}`);
         const meta = await res.json();
 
-        let content = '';
+        liveInfo.replaceChildren();
         if (meta.now_playing && meta.now_playing !== 'Unknown') {
-            content += `<div style="font-weight:bold; color:var(--accent); font-size:1.1rem;">🎵 ${meta.now_playing}</div>`;
+            liveInfo.appendChild(createElement('div', {
+                text: `🎵 ${meta.now_playing}`,
+                style: {
+                    fontWeight: 'bold',
+                    color: 'var(--accent)',
+                    fontSize: '1.1rem'
+                }
+            }));
         } else {
-            content += `<div style="color:var(--text-secondary);">No playing info available</div>`;
+            liveInfo.appendChild(createElement('div', {
+                text: 'No playing info available',
+                style: { color: 'var(--text-secondary)' }
+            }));
         }
 
-        if (meta.server_name) content += `<div>Server: ${meta.server_name}</div>`;
-
-        liveInfo.innerHTML = content;
+        if (meta.server_name) {
+            liveInfo.appendChild(createElement('div', { text: `Server: ${meta.server_name}` }));
+        }
     } catch (e) {
         liveInfo.textContent = "Could not fetch metadata.";
     }
@@ -404,61 +463,91 @@ async function loadFavorites() {
 function renderFavorites() {
     const container = document.getElementById('favorites-grid');
     if (!favoriteStations.length) {
-        container.innerHTML = '<div style="grid-column: 1 / -1; text-align: center; color: var(--text-secondary); padding: 20px;">No favorites saved. Search for a station and click ❤️ to save.</div>';
+        container.replaceChildren(createElement('div', {
+            text: 'No favorites saved. Search for a station and click ❤️ to save.',
+            style: {
+                gridColumn: '1 / -1',
+                textAlign: 'center',
+                color: 'var(--text-secondary)',
+                padding: '20px'
+            }
+        }));
         return;
     }
 
-    container.innerHTML = '';
+    container.replaceChildren();
     favoriteStations.forEach(station => {
         const card = document.createElement('div');
         card.className = 'fav-card';
 
-        // Image / placeholder
-        let imageHtml;
+        const imageBox = createElement('div', { className: 'fav-card-image' });
         if (station.favicon) {
-            imageHtml = `<div class="fav-card-image"><img src="${station.favicon}" alt="" onerror="this.parentElement.innerHTML='📻'"></div>`;
+            const image = createElement('img', { src: station.favicon, alt: '' });
+            image.addEventListener('error', () => imageBox.replaceChildren('📻'));
+            imageBox.appendChild(image);
         } else {
-            imageHtml = `<div class="fav-card-image">📻</div>`;
+            imageBox.textContent = '📻';
         }
 
-        // Country flag
-        let flagHtml = '';
+        const meta = createElement('div', { className: 'fav-card-meta' });
         if (station.countrycode) {
-            const countryCode = station.countrycode.toUpperCase();
+            const countryCode = station.countrycode.toUpperCase().replace(/[^A-Z]/g, '');
             const flag = countryCode
                 .split('')
                 .map(char => String.fromCodePoint(0x1F1E6 - 65 + char.charCodeAt(0)))
                 .join('');
-            flagHtml = `<span title="${countryCode}">${flag}</span>`;
+            if (flag) {
+                meta.appendChild(createElement('span', { title: countryCode, text: flag }));
+            }
         }
 
-        // Bitrate badge
-        const bitrate = station.bitrate ? `${station.bitrate}k` : '';
+        if (station.bitrate) {
+            meta.appendChild(createElement('span', { text: `${station.bitrate}k` }));
+        }
 
-        card.innerHTML = `
-            ${imageHtml}
-            <div class="fav-card-body">
-                <div class="fav-card-name" title="${station.name}">${station.name}</div>
-                <div class="fav-card-meta">${flagHtml}${bitrate ? `<span>${bitrate}</span>` : ''}</div>
-            </div>
-            <div class="fav-card-actions">
-                <button class="btn-play" title="Play station">▶</button>
-                <button class="btn-info" title="Station info">ℹ️</button>
-                <button class="btn-delete" title="Remove">✕</button>
-            </div>
-        `;
+        const body = createElement('div', { className: 'fav-card-body' }, [
+            createElement('div', {
+                className: 'fav-card-name',
+                title: station.name,
+                text: station.name
+            }),
+            meta
+        ]);
 
-        card.querySelector('.btn-play').addEventListener('click', (e) => {
+        const playButton = createElement('button', {
+            className: 'btn-play',
+            title: 'Play station',
+            text: '▶'
+        });
+        const infoButton = createElement('button', {
+            className: 'btn-info',
+            title: 'Station info',
+            text: 'ℹ️'
+        });
+        const deleteButton = createElement('button', {
+            className: 'btn-delete',
+            title: 'Remove',
+            text: '✕'
+        });
+        const actions = createElement('div', { className: 'fav-card-actions' }, [
+            playButton,
+            infoButton,
+            deleteButton
+        ]);
+
+        card.append(imageBox, body, actions);
+
+        playButton.addEventListener('click', (e) => {
             e.stopPropagation();
             playUrl(station.url, station.name);
         });
 
-        card.querySelector('.btn-info').addEventListener('click', (e) => {
+        infoButton.addEventListener('click', (e) => {
             e.stopPropagation();
             showStationInfo(station);
         });
 
-        card.querySelector('.btn-delete').addEventListener('click', async (e) => {
+        deleteButton.addEventListener('click', async (e) => {
             e.stopPropagation();
             await fetch('/api/favorites/delete', {
                 method: 'POST',
@@ -522,10 +611,20 @@ async function searchStations(query) {
 
 function renderResults(data) {
     const tbody = document.getElementById('results-body');
-    tbody.innerHTML = '';
+    tbody.replaceChildren();
 
     if (data.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding: 20px;">No results found</td></tr>';
+        const row = document.createElement('tr');
+        const cell = createElement('td', {
+            colspan: '5',
+            text: 'No results found',
+            style: {
+                textAlign: 'center',
+                padding: '20px'
+            }
+        });
+        row.appendChild(cell);
+        tbody.appendChild(row);
         return;
     }
 
@@ -533,27 +632,91 @@ function renderResults(data) {
         const tr = document.createElement('tr');
         tr.style.borderBottom = '1px solid var(--border-color)';
 
-        const logoHtml = station.favicon
-            ? `<img src="${station.favicon}" style="width: 32px; height: 32px; object-fit: contain; border-radius: 4px;" onerror="this.style.display='none'">`
-            : '<span style="font-size:1.5rem">📻</span>';
+        const logoCell = createElement('td', {
+            style: {
+                padding: '12px',
+                textAlign: 'center'
+            }
+        });
+        if (station.favicon) {
+            const logo = createElement('img', {
+                src: station.favicon,
+                alt: '',
+                style: {
+                    width: '32px',
+                    height: '32px',
+                    objectFit: 'contain',
+                    borderRadius: '4px'
+                }
+            });
+            logo.addEventListener('error', () => {
+                logo.style.display = 'none';
+            });
+            logoCell.appendChild(logo);
+        } else {
+            logoCell.appendChild(createElement('span', {
+                text: '📻',
+                style: { fontSize: '1.5rem' }
+            }));
+        }
 
-        tr.innerHTML = `
-            <td style="padding: 12px; text-align: center;">${logoHtml}</td>
-            <td style="padding: 12px;">${station.name}</td>
-            <td style="padding: 12px; color: var(--text-secondary);">${station.countrycode || ''}</td>
-            <td style="padding: 12px; color: var(--text-secondary);">${station.bitrate}k</td>
-            <td style="padding: 12px; display:flex; gap:8px;">
-                <button class="btn-small" onclick="playUrl('${station.url_resolved}', '${station.name.replace(/'/g, "\\'")}')" title="Play">
-                   ▶
-                </button>
-                <button class="btn-small" onclick="showStationInfo(currentResults[${index}])" title="Info" style="background:var(--card-bg); border:1px solid var(--border-color); color:var(--text-primary);">
-                   ℹ️
-                </button>
-                <button class="btn-small" onclick="addToFavorites(currentResults[${index}])" title="Save to Favorites" style="background:var(--card-bg); border:1px solid var(--border-color); color:var(--accent);">
-                   ❤️
-                </button>
-            </td>
-        `;
+        const actionsCell = createElement('td', {
+            style: {
+                padding: '12px',
+                display: 'flex',
+                gap: '8px'
+            }
+        });
+        const playButton = createElement('button', {
+            className: 'btn-small',
+            title: 'Play',
+            text: '▶'
+        });
+        const infoButton = createElement('button', {
+            className: 'btn-small',
+            title: 'Info',
+            text: 'ℹ️',
+            style: {
+                background: 'var(--card-bg)',
+                border: '1px solid var(--border-color)',
+                color: 'var(--text-primary)'
+            }
+        });
+        const favoriteButton = createElement('button', {
+            className: 'btn-small',
+            title: 'Save to Favorites',
+            text: '❤️',
+            style: {
+                background: 'var(--card-bg)',
+                border: '1px solid var(--border-color)',
+                color: 'var(--accent)'
+            }
+        });
+
+        playButton.addEventListener('click', () => playUrl(station.url_resolved || station.url, station.name));
+        infoButton.addEventListener('click', () => showStationInfo(currentResults[index]));
+        favoriteButton.addEventListener('click', () => addToFavorites(currentResults[index]));
+        actionsCell.append(playButton, infoButton, favoriteButton);
+
+        tr.append(
+            logoCell,
+            createElement('td', { text: station.name, style: { padding: '12px' } }),
+            createElement('td', {
+                text: station.countrycode || '',
+                style: {
+                    padding: '12px',
+                    color: 'var(--text-secondary)'
+                }
+            }),
+            createElement('td', {
+                text: station.bitrate ? `${station.bitrate}k` : '',
+                style: {
+                    padding: '12px',
+                    color: 'var(--text-secondary)'
+                }
+            }),
+            actionsCell
+        );
         tbody.appendChild(tr);
     });
 }
@@ -867,39 +1030,48 @@ async function checkSpotifyAuth() {
         const spotifyContent = document.getElementById('spotify-content');
 
         if (data.authenticated) {
-            // Show user info and logout button
-            authStatus.innerHTML = `
-                <span style="color: var(--text-secondary); font-size: 0.9rem;">
-                    Logged in as <strong>${data.user.display_name || data.user.id}</strong>
-                </span>
-                <button class="btn-small" onclick="logoutSpotify()" style="background: var(--card-bg); border: 1px solid var(--border-color);">
-                    Logout
-                </button>
-            `;
+            const loginText = createElement('span', {
+                style: {
+                    color: 'var(--text-secondary)',
+                    fontSize: '0.9rem'
+                }
+            }, [
+                'Logged in as ',
+                createElement('strong', { text: data.user.display_name || data.user.id })
+            ]);
+            const logoutButton = createElement('button', {
+                className: 'btn-small',
+                text: 'Logout',
+                style: {
+                    background: 'var(--card-bg)',
+                    border: '1px solid var(--border-color)'
+                }
+            });
+            logoutButton.addEventListener('click', logoutSpotify);
+            authStatus.replaceChildren(loginText, logoutButton);
 
             // Load playlists
             loadSpotifyPlaylists();
         } else {
-            // Show login button
-            authStatus.innerHTML = `
-                <button class="btn-small btn-primary" onclick="loginSpotify()">
-                    Login with Spotify
-                </button>
-            `;
+            const loginButton = createElement('button', {
+                className: 'btn-small btn-primary',
+                text: 'Login with Spotify'
+            });
+            loginButton.addEventListener('click', loginSpotify);
+            authStatus.replaceChildren(loginButton);
 
-            spotifyContent.innerHTML = `
-                <div style="text-align: center; color: var(--text-secondary); padding: 20px;">
-                    Login with your Spotify Premium account to browse and play your playlists on the Denon AVR.
-                </div>
-            `;
+            setPanelMessage(
+                spotifyContent,
+                'Login with your Spotify Premium account to browse and play your playlists on the Denon AVR.'
+            );
         }
     } catch (e) {
         console.error("Failed to check Spotify auth", e);
-        document.getElementById('spotify-content').innerHTML = `
-            <div style="text-align: center; color: var(--error); padding: 20px;">
-                Failed to check Spotify authentication status.
-            </div>
-        `;
+        setPanelMessage(
+            document.getElementById('spotify-content'),
+            'Failed to check Spotify authentication status.',
+            'var(--error)'
+        );
     }
 }
 
@@ -920,7 +1092,7 @@ async function logoutSpotify() {
 
 async function loadSpotifyPlaylists() {
     const spotifyContent = document.getElementById('spotify-content');
-    spotifyContent.innerHTML = '<div style="text-align: center; padding: 20px;">Loading playlists...</div>';
+    setPanelMessage(spotifyContent, 'Loading playlists...', 'var(--text-primary)');
 
     try {
         const [playlistsRes, recentsRes] = await Promise.all([
@@ -931,12 +1103,12 @@ async function loadSpotifyPlaylists() {
         const playlists = await playlistsRes.json();
 
         if (playlists.error) {
-            spotifyContent.innerHTML = `<div style="text-align: center; color: var(--error); padding: 20px;">${playlists.error}</div>`;
+            setPanelMessage(spotifyContent, playlists.error, 'var(--error)');
             return;
         }
 
         if (!playlists.length) {
-            spotifyContent.innerHTML = `<div style="text-align: center; color: var(--text-secondary); padding: 20px;">No playlists found.</div>`;
+            setPanelMessage(spotifyContent, 'No playlists found.');
             return;
         }
 
@@ -960,7 +1132,7 @@ async function loadSpotifyPlaylists() {
         renderSpotifyPlaylists();
     } catch (e) {
         console.error("Failed to load Spotify playlists", e);
-        spotifyContent.innerHTML = `<div style="text-align: center; color: var(--error); padding: 20px;">Failed to load playlists.</div>`;
+        setPanelMessage(spotifyContent, 'Failed to load playlists.', 'var(--error)');
     }
 }
 
@@ -981,13 +1153,13 @@ function renderSpotifyPlaylists() {
     // Sort a copy
     const sorted = [...allSpotifyPlaylists];
     if (currentSpotifySort === 'name-asc') {
-        sorted.sort((a, b) => a.name.localeCompare(b.name));
+        sorted.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
     } else if (currentSpotifySort === 'name-desc') {
-        sorted.sort((a, b) => b.name.localeCompare(a.name));
+        sorted.sort((a, b) => String(b.name || '').localeCompare(String(a.name || '')));
     } else if (currentSpotifySort === 'tracks-asc') {
-        sorted.sort((a, b) => a.tracks_total - b.tracks_total);
+        sorted.sort((a, b) => (Number(a.tracks_total) || 0) - (Number(b.tracks_total) || 0));
     } else if (currentSpotifySort === 'tracks-desc') {
-        sorted.sort((a, b) => b.tracks_total - a.tracks_total);
+        sorted.sort((a, b) => (Number(b.tracks_total) || 0) - (Number(a.tracks_total) || 0));
     } else if (currentSpotifySort === 'last-played') {
         sorted.sort((a, b) => a.lastPlayedRank - b.lastPlayedRank);
     }
@@ -1007,39 +1179,107 @@ function renderSpotifyPlaylists() {
         { key: 'tracks',      label: tracksLabel,   isActive: currentSpotifySort.startsWith('tracks') },
     ];
 
-    let toolbarHtml = '<div class="sort-bar"><label>Sort:</label>';
+    const toolbar = createElement('div', { className: 'sort-bar' }, [
+        createElement('label', { text: 'Sort:' })
+    ]);
     sortOptions.forEach(opt => {
         const activeClass = opt.isActive ? ' active' : '';
-        toolbarHtml += `<button class="sort-btn${activeClass}" onclick="sortSpotifyPlaylists('${opt.key}')">${opt.label}</button>`;
+        const button = createElement('button', {
+            className: `sort-btn${activeClass}`,
+            text: opt.label
+        });
+        button.addEventListener('click', () => sortSpotifyPlaylists(opt.key));
+        toolbar.appendChild(button);
     });
-    toolbarHtml += '</div>';
 
-    // Grid
-    let gridHtml = '<div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px;">';
+    const grid = createElement('div', {
+        className: 'grid',
+        style: {
+            gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
+            gap: '12px'
+        }
+    });
+
+    const placeholderStyle = {
+        width: '100%',
+        height: '150px',
+        background: 'var(--input-bg)',
+        borderRadius: '8px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: '3rem',
+        marginBottom: '8px'
+    };
 
     sorted.forEach(playlist => {
-        const imgHtml = playlist.image_url
-            ? `<img src="${playlist.image_url}" style="width: 100%; height: 150px; object-fit: cover; border-radius: 8px; margin-bottom: 8px;" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22150%22 height=%22150%22><rect fill=%22%233a3a3a%22 width=%22150%22 height=%22150%22/><text x=%2250%%22 y=%2250%%22 font-family=%22Arial%22 font-size=%2220%22 fill=%22%23666%22 text-anchor=%22middle%22 dy=%22.3em%22>🎵</text></svg>'">`
-            : '<div style="width: 100%; height: 150px; background: var(--input-bg); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 3rem; margin-bottom: 8px;">💚</div>';
+        const imageFallback = () => createElement('div', {
+            text: '💚',
+            style: placeholderStyle
+        });
+        const media = playlist.image_url
+            ? createElement('img', {
+                src: playlist.image_url,
+                alt: '',
+                style: {
+                    width: '100%',
+                    height: '150px',
+                    objectFit: 'cover',
+                    borderRadius: '8px',
+                    marginBottom: '8px'
+                }
+            })
+            : imageFallback();
 
-        gridHtml += `
-            <div class="btn" onclick="showSpotifyPlaylist('${playlist.id}', '${playlist.name.replace(/'/g, "\\'")}', '${playlist.uri || ''}', ${playlist.tracks_total})"
-                 style="flex-direction: column; align-items: stretch; padding: 0; overflow: hidden; cursor: pointer;">
-                ${imgHtml}
-                <div style="padding: 12px;">
-                    <div style="font-weight: 600; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${playlist.name}">
-                        ${playlist.name}
-                    </div>
-                    <div style="font-size: 0.85rem; color: var(--text-secondary);">
-                        ${playlist.tracks_total} tracks
-                    </div>
-                </div>
-            </div>
-        `;
+        if (playlist.image_url) {
+            media.addEventListener('error', () => media.replaceWith(imageFallback()));
+        }
+
+        const card = createElement('div', {
+            className: 'btn',
+            style: {
+                flexDirection: 'column',
+                alignItems: 'stretch',
+                padding: '0',
+                overflow: 'hidden',
+                cursor: 'pointer'
+            }
+        }, [
+            media,
+            createElement('div', { style: { padding: '12px' } }, [
+                createElement('div', {
+                    title: playlist.name || '',
+                    text: playlist.name || 'Untitled playlist',
+                    style: {
+                        fontWeight: '600',
+                        marginBottom: '4px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap'
+                    }
+                }),
+                createElement('div', {
+                    text: `${playlist.tracks_total || 0} tracks`,
+                    style: {
+                        fontSize: '0.85rem',
+                        color: 'var(--text-secondary)'
+                    }
+                })
+            ])
+        ]);
+
+        card.addEventListener('click', () => {
+            showSpotifyPlaylist(
+                playlist.id,
+                playlist.name || 'Untitled playlist',
+                playlist.uri || '',
+                playlist.tracks_total || 0
+            );
+        });
+        grid.appendChild(card);
     });
 
-    gridHtml += '</div>';
-    spotifyContent.innerHTML = toolbarHtml + gridHtml;
+    spotifyContent.replaceChildren(toolbar, grid);
 }
 
 async function showSpotifyPlaylist(playlistId, playlistName, playlistUri, trackCount) {
@@ -1057,7 +1297,7 @@ async function showSpotifyPlaylist(playlistId, playlistName, playlistUri, trackC
     info.textContent = `${trackCount} tracks`;
 
     // Show loading
-    tracksList.innerHTML = '<div style="text-align: center; padding: 20px;">Loading tracks...</div>';
+    setPanelMessage(tracksList, 'Loading tracks...', 'var(--text-primary)');
     modal.style.display = 'flex';
 
     // Set play button action
@@ -1068,52 +1308,120 @@ async function showSpotifyPlaylist(playlistId, playlistName, playlistUri, trackC
 
     // Load tracks
     try {
-        const res = await fetch(`/api/spotify/playlist/${playlistId}/tracks`);
+        const res = await fetch(`/api/spotify/playlist/${encodeURIComponent(playlistId)}/tracks`);
         const tracks = await res.json();
 
         if (tracks.error) {
-            tracksList.innerHTML = `<div style="text-align: center; color: var(--error); padding: 20px;">${tracks.error}</div>`;
+            setPanelMessage(tracksList, tracks.error, 'var(--error)');
             return;
         }
 
         if (!tracks.length) {
-            tracksList.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 20px;">No tracks found.</div>';
+            setPanelMessage(tracksList, 'No tracks found.');
             return;
         }
 
-        // Render tracks
-        let html = '<div style="display: flex; flex-direction: column; gap: 8px;">';
-        tracks.forEach((track, index) => {
-            const duration = track.duration_ms ? formatDuration(track.duration_ms) : '';
-            const imgHtml = track.image_url
-                ? `<img src="${track.image_url}" style="width: 40px; height: 40px; object-fit: cover; border-radius: 4px;">`
-                : '<div style="width: 40px; height: 40px; background: var(--input-bg); border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 1.2rem;">🎵</div>';
-
-            html += `
-                <div style="display: flex; gap: 12px; align-items: center; padding: 8px; background: var(--input-bg); border-radius: 6px; cursor: pointer;"
-                     onclick="playSpotifyTrack(['${track.uri}'], '${track.name.replace(/'/g, "\\'")} - ${track.artists.replace(/'/g, "\\'")}')"
-                     title="Click to play">
-                    ${imgHtml}
-                    <div style="flex-grow: 1; min-width: 0;">
-                        <div style="font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                            ${track.name}
-                        </div>
-                        <div style="font-size: 0.85rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                            ${track.artists}
-                        </div>
-                    </div>
-                    <div style="color: var(--text-secondary); font-size: 0.85rem; white-space: nowrap;">
-                        ${duration}
-                    </div>
-                </div>
-            `;
+        const trackList = createElement('div', {
+            style: {
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px'
+            }
         });
-        html += '</div>';
 
-        tracksList.innerHTML = html;
+        tracks.forEach((track) => {
+            const trackName = track.name || 'Unknown track';
+            const trackArtists = track.artists || 'Unknown artist';
+            const duration = track.duration_ms ? formatDuration(track.duration_ms) : '';
+            const imageFallback = () => createElement('div', {
+                text: '🎵',
+                style: {
+                    width: '40px',
+                    height: '40px',
+                    background: 'var(--input-bg)',
+                    borderRadius: '4px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '1.2rem'
+                }
+            });
+            const media = track.image_url
+                ? createElement('img', {
+                    src: track.image_url,
+                    alt: '',
+                    style: {
+                        width: '40px',
+                        height: '40px',
+                        objectFit: 'cover',
+                        borderRadius: '4px'
+                    }
+                })
+                : imageFallback();
+
+            if (track.image_url) {
+                media.addEventListener('error', () => media.replaceWith(imageFallback()));
+            }
+
+            const row = createElement('div', {
+                title: 'Click to play',
+                style: {
+                    display: 'flex',
+                    gap: '12px',
+                    alignItems: 'center',
+                    padding: '8px',
+                    background: 'var(--input-bg)',
+                    borderRadius: '6px',
+                    cursor: 'pointer'
+                }
+            }, [
+                media,
+                createElement('div', {
+                    style: {
+                        flexGrow: '1',
+                        minWidth: '0'
+                    }
+                }, [
+                    createElement('div', {
+                        text: trackName,
+                        style: {
+                            fontWeight: '500',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap'
+                        }
+                    }),
+                    createElement('div', {
+                        text: trackArtists,
+                        style: {
+                            fontSize: '0.85rem',
+                            color: 'var(--text-secondary)',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap'
+                        }
+                    })
+                ]),
+                createElement('div', {
+                    text: duration,
+                    style: {
+                        color: 'var(--text-secondary)',
+                        fontSize: '0.85rem',
+                        whiteSpace: 'nowrap'
+                    }
+                })
+            ]);
+
+            row.addEventListener('click', () => {
+                playSpotifyTrack([track.uri], `${trackName} - ${trackArtists}`);
+            });
+            trackList.appendChild(row);
+        });
+
+        tracksList.replaceChildren(trackList);
     } catch (e) {
         console.error("Failed to load tracks", e);
-        tracksList.innerHTML = '<div style="text-align: center; color: var(--error); padding: 20px;">Failed to load tracks.</div>';
+        setPanelMessage(tracksList, 'Failed to load tracks.', 'var(--error)');
     }
 }
 

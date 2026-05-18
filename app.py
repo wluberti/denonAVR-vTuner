@@ -25,15 +25,24 @@ def get_env_int(name, default):
     except (TypeError, ValueError):
         return default
 
+def get_env_bool(name, default=False):
+    default_value = "true" if default else "false"
+    return os.getenv(name, default_value).lower() in ("true", "1", "yes")
+
 def get_env_list(name, default=""):
     raw_value = os.getenv(name, default)
     return [item.strip() for item in raw_value.split(",") if item.strip()]
 
 # Configuration
 DENON_IP = os.getenv("DENON_IP")
-DEBUG = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
-DENON_DISPLAY_METADATA = os.getenv("DENON_DISPLAY_METADATA", "true").lower() in ("true", "1", "yes")
-DENON_DISPLAY_METADATA_UPDATE_INTERVAL = get_env_int("DENON_DISPLAY_METADATA_UPDATE_INTERVAL", 10)
+DEBUG = get_env_bool("DEBUG")
+DENON_DISPLAY_METADATA = get_env_bool("DENON_DISPLAY_METADATA", True)
+DENON_DISPLAY_METADATA_REFRESH = get_env_bool("DENON_DISPLAY_METADATA_REFRESH", False)
+DENON_DISPLAY_METADATA_MIN_REFRESH_INTERVAL = 30
+DENON_DISPLAY_METADATA_UPDATE_INTERVAL = max(
+    DENON_DISPLAY_METADATA_MIN_REFRESH_INTERVAL,
+    get_env_int("DENON_DISPLAY_METADATA_UPDATE_INTERVAL", 120)
+)
 HOME_ASSISTANT_CORS_ORIGINS = get_env_list("HOME_ASSISTANT_CORS_ORIGINS", "*")
 
 # Spotify Configuration
@@ -59,6 +68,21 @@ _DENON_DISPLAY_WORKER_STARTED = False
 ICY_METADATA_READ_TIMEOUT = 6
 ICY_METADATA_MAX_BLOCKS = 4
 ICY_METADATA_READ_CHUNK_SIZE = 16384
+
+XML_INVALID_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
+DIDL_NS = "urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"
+DC_NS = "http://purl.org/dc/elements/1.1/"
+UPNP_NS = "urn:schemas-upnp-org:metadata-1-0/upnp/"
+DLNA_NS = "urn:schemas-dlna-org:metadata-1-0/"
+SOAP_ENV_NS = "http://schemas.xmlsoap.org/soap/envelope/"
+AVTRANSPORT_NS = "urn:schemas-upnp-org:service:AVTransport:1"
+
+ET.register_namespace("", DIDL_NS)
+ET.register_namespace("dc", DC_NS)
+ET.register_namespace("upnp", UPNP_NS)
+ET.register_namespace("dlna", DLNA_NS)
+ET.register_namespace("s", SOAP_ENV_NS)
+ET.register_namespace("u", AVTRANSPORT_NS)
 
 def save_last_played(url, name, playback_url=None):
     try:
@@ -729,48 +753,80 @@ def discover_avtransport_control_url():
     _AV_TRANSPORT_CONTROL_URL = control_url
     return control_url
 
+def clean_xml_text(value):
+    text = "" if value is None else str(value)
+    return XML_INVALID_CHARS_RE.sub("", text)
+
+def serialize_xml(element):
+    return '<?xml version="1.0" encoding="utf-8"?>\n' + ET.tostring(
+        element,
+        encoding="unicode",
+        short_empty_elements=False
+    )
+
 def build_didl_lite(stream_url, station_name, display_title=None, artist=None):
     display_title = get_denon_display_title(station_name, display_title)
-    escaped_station = html.escape(station_name or "Radio")
-    escaped_title = html.escape(display_title)
-    escaped_stream_url = html.escape(stream_url, quote=False)
 
-    metadata = [
-        '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">',
-        '<item id="0" parentID="0" restricted="1">',
-        f"<dc:title>{escaped_title}</dc:title>",
-    ]
+    root = ET.Element(f"{{{DIDL_NS}}}DIDL-Lite")
+    item = ET.SubElement(
+        root,
+        f"{{{DIDL_NS}}}item",
+        {"id": "0", "parentID": "0", "restricted": "1"}
+    )
+
+    ET.SubElement(item, f"{{{DC_NS}}}title").text = clean_xml_text(display_title)
 
     if artist:
-        escaped_artist = html.escape(artist)
-        metadata.append(f"<dc:creator>{escaped_artist}</dc:creator>")
-        metadata.append(f"<upnp:artist>{escaped_artist}</upnp:artist>")
+        clean_artist = clean_xml_text(artist)
+        ET.SubElement(item, f"{{{DC_NS}}}creator").text = clean_artist
+        ET.SubElement(item, f"{{{UPNP_NS}}}artist").text = clean_artist
 
-    metadata.extend([
-        f"<upnp:album>{escaped_station}</upnp:album>",
-        "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>",
-        f'<res protocolInfo="http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000">{escaped_stream_url}</res>',
-        "</item>",
-        "</DIDL-Lite>",
-    ])
+    ET.SubElement(item, f"{{{UPNP_NS}}}album").text = clean_xml_text(station_name or "Radio")
+    ET.SubElement(item, f"{{{UPNP_NS}}}class").text = "object.item.audioItem.audioBroadcast"
+    ET.SubElement(
+        item,
+        f"{{{DIDL_NS}}}res",
+        {
+            "protocolInfo": (
+                "http-get:*:audio/mpeg:"
+                "DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;DLNA.ORG_CI=0;"
+                "DLNA.ORG_FLAGS=01700000000000000000000000000000"
+            )
+        }
+    ).text = clean_xml_text(stream_url)
 
-    return "\n".join(metadata)
+    return ET.tostring(root, encoding="unicode", short_empty_elements=False)
+
+def build_set_avtransport_uri_body(playback_url, didl_lite):
+    envelope = ET.Element(
+        f"{{{SOAP_ENV_NS}}}Envelope",
+        {f"{{{SOAP_ENV_NS}}}encodingStyle": "http://schemas.xmlsoap.org/soap/encoding/"}
+    )
+    body = ET.SubElement(envelope, f"{{{SOAP_ENV_NS}}}Body")
+    action = ET.SubElement(body, f"{{{AVTRANSPORT_NS}}}SetAVTransportURI")
+
+    ET.SubElement(action, "InstanceID").text = "0"
+    ET.SubElement(action, "CurrentURI").text = clean_xml_text(playback_url)
+    ET.SubElement(action, "CurrentURIMetaData").text = clean_xml_text(didl_lite)
+
+    return serialize_xml(envelope)
+
+def build_play_body():
+    envelope = ET.Element(
+        f"{{{SOAP_ENV_NS}}}Envelope",
+        {f"{{{SOAP_ENV_NS}}}encodingStyle": "http://schemas.xmlsoap.org/soap/encoding/"}
+    )
+    body = ET.SubElement(envelope, f"{{{SOAP_ENV_NS}}}Body")
+    action = ET.SubElement(body, f"{{{AVTRANSPORT_NS}}}Play")
+
+    ET.SubElement(action, "InstanceID").text = "0"
+    ET.SubElement(action, "Speed").text = "1"
+
+    return serialize_xml(envelope)
 
 def send_avtransport_uri(control_url, playback_url, station_name, display_title=None, artist=None):
     didl_lite = build_didl_lite(playback_url, station_name, display_title, artist)
-    escaped_didl = html.escape(didl_lite)
-    escaped_playback_url = html.escape(playback_url, quote=False)
-
-    soap_body = f"""<?xml version="1.0" encoding="utf-8"?>
-        <s:Envelope s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/" xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-            <s:Body>
-                <u:SetAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
-                    <InstanceID>0</InstanceID>
-                    <CurrentURI>{escaped_playback_url}</CurrentURI>
-                    <CurrentURIMetaData>{escaped_didl}</CurrentURIMetaData>
-                </u:SetAVTransportURI>
-            </s:Body>
-        </s:Envelope>"""
+    soap_body = build_set_avtransport_uri_body(playback_url, didl_lite)
 
     headers = {
         'Content-Type': 'text/xml; charset="utf-8"',
@@ -783,19 +839,9 @@ def send_avtransport_uri(control_url, playback_url, station_name, display_title=
     if resp1.status_code >= 400:
         raise RuntimeError(f"SetAVTransportURI failed with HTTP {resp1.status_code}")
 
-    play_body = """<?xml version="1.0" encoding="utf-8"?>
-        <s:Envelope s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/" xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-            <s:Body>
-                <u:Play xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
-                    <InstanceID>0</InstanceID>
-                    <Speed>1</Speed>
-                </u:Play>
-            </s:Body>
-        </s:Envelope>"""
-
     headers['SOAPAction'] = '"urn:schemas-upnp-org:service:AVTransport:1#Play"'
     log_debug(f"Sending Play to {control_url}...")
-    resp2 = requests.post(control_url, data=play_body, headers=headers, timeout=5)
+    resp2 = requests.post(control_url, data=build_play_body(), headers=headers, timeout=5)
     log_debug(f"Play Response: {resp2.status_code} {resp2.text}")
     if resp2.status_code >= 400:
         raise RuntimeError(f"Play failed with HTTP {resp2.status_code}")
@@ -808,7 +854,7 @@ def remember_denon_display_update(playback_url, display_title):
     _LAST_DENON_DISPLAY_UPDATE["at"] = time.time()
 
 def maybe_update_denon_display(radio_state):
-    if not DENON_IP or not DENON_DISPLAY_METADATA:
+    if not DENON_IP or not DENON_DISPLAY_METADATA or not DENON_DISPLAY_METADATA_REFRESH:
         return
 
     now_playing = normalize_now_playing(radio_state.get("now_playing"))
@@ -849,7 +895,7 @@ def run_denon_display_update(radio_state):
         maybe_update_denon_display(radio_state)
 
 def schedule_denon_display_update(radio_state):
-    if not DENON_IP or not DENON_DISPLAY_METADATA:
+    if not DENON_IP or not DENON_DISPLAY_METADATA or not DENON_DISPLAY_METADATA_REFRESH:
         return
 
     if _DENON_DISPLAY_UPDATE_LOCK.locked():
@@ -867,7 +913,7 @@ def schedule_denon_display_update(radio_state):
     thread.start()
 
 def denon_display_metadata_worker():
-    sleep_seconds = max(1, DENON_DISPLAY_METADATA_UPDATE_INTERVAL)
+    sleep_seconds = DENON_DISPLAY_METADATA_UPDATE_INTERVAL
     log_debug(f"Started Denon display metadata worker, interval={sleep_seconds}s")
 
     while True:
@@ -892,7 +938,7 @@ def denon_display_metadata_worker():
 def start_denon_display_metadata_worker():
     global _DENON_DISPLAY_WORKER_STARTED
 
-    if not DENON_IP or not DENON_DISPLAY_METADATA:
+    if not DENON_IP or not DENON_DISPLAY_METADATA or not DENON_DISPLAY_METADATA_REFRESH:
         return
 
     with _DENON_DISPLAY_WORKER_LOCK:

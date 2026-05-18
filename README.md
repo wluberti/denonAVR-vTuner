@@ -24,7 +24,8 @@ Since Denon/Marantz discontinued vTuner support for older AVR models (e.g., AVR-
    # HOST_IP=192.168.x.y     <-- IP of the machine running this app
    # HOST_PORT=8800          <-- Port mapped in docker-compose
    # DENON_DISPLAY_METADATA=true
-   # DENON_DISPLAY_METADATA_UPDATE_INTERVAL=10
+   # DENON_DISPLAY_METADATA_REFRESH=false
+   # DENON_DISPLAY_METADATA_UPDATE_INTERVAL=120
    # HOME_ASSISTANT_CORS_ORIGINS=*  <-- Or comma-separated HA origins, e.g. http://homeassistant.local:8123
    #
    # For Spotify integration (optional):
@@ -58,6 +59,6 @@ See [home-assistant/README.md](home-assistant/README.md) and
 [home-assistant/dashboard.yaml](home-assistant/dashboard.yaml).
 
 ## Denon Display Metadata
-When `DENON_DISPLAY_METADATA=true`, the app sends live radio metadata as the DLNA title so compatible AVR displays can show the current artist and song instead of only the station name. The backend checks the current stream every `DENON_DISPLAY_METADATA_UPDATE_INTERVAL` seconds and refreshes the AVR's UPnP metadata when the title changes, but only while the AVR reports that it is powered on and already using a radio/network source.
+When `DENON_DISPLAY_METADATA=true`, the app reads radio metadata when playback starts and sends it as the DLNA title so compatible AVR displays can show artist and song details instead of only the station name. XML for the UPnP request is generated with an XML serializer so special characters in station names, artists, titles, and URLs are escaped correctly.
 
-Some Denon/Marantz models briefly restart network playback when metadata is refreshed. If that happens, set `DENON_DISPLAY_METADATA=false`, or increase `DENON_DISPLAY_METADATA_UPDATE_INTERVAL`.
+Optional live refresh is controlled by `DENON_DISPLAY_METADATA_REFRESH`. It is off by default because some Denon/Marantz models briefly restart network playback whenever `SetAVTransportURI` is resent. If you enable it, the app checks the current stream every `DENON_DISPLAY_METADATA_UPDATE_INTERVAL` seconds and refreshes the AVR's UPnP metadata only when the title changes, while the AVR reports that it is powered on and already using a radio/network source. The minimum refresh interval is 30 seconds.
