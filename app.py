@@ -37,12 +37,17 @@ def get_env_list(name, default=""):
 DENON_IP = os.getenv("DENON_IP")
 DEBUG = get_env_bool("DEBUG")
 DENON_DISPLAY_METADATA = get_env_bool("DENON_DISPLAY_METADATA", True)
-DENON_DISPLAY_METADATA_REFRESH = get_env_bool("DENON_DISPLAY_METADATA_REFRESH", False)
-DENON_DISPLAY_METADATA_MIN_REFRESH_INTERVAL = 30
-DENON_DISPLAY_METADATA_UPDATE_INTERVAL = max(
-    DENON_DISPLAY_METADATA_MIN_REFRESH_INTERVAL,
-    get_env_int("DENON_DISPLAY_METADATA_UPDATE_INTERVAL", 120)
+DENON_DISPLAY_METADATA_REFRESH = get_env_bool("DENON_DISPLAY_METADATA_REFRESH", True)
+DENON_DISPLAY_METADATA_MIN_POLL_INTERVAL = 10
+DENON_DISPLAY_METADATA_POLL_INTERVAL = max(
+    DENON_DISPLAY_METADATA_MIN_POLL_INTERVAL,
+    get_env_int("DENON_DISPLAY_METADATA_UPDATE_INTERVAL", 30)
 )
+# The AVR display is only pushed to when the track title actually changes;
+# this is the minimum gap between two pushes so the AVR is never hammered.
+DENON_DISPLAY_METADATA_MIN_PUSH_INTERVAL = 30
+DENON_DISPLAY_METADATA_VERIFY_DELAY_SECONDS = 5
+DENON_DISPLAY_METADATA_MAX_PUSH_ATTEMPTS = 2
 HOME_ASSISTANT_CORS_ORIGINS = get_env_list("HOME_ASSISTANT_CORS_ORIGINS", "*")
 
 # Spotify Configuration
@@ -797,61 +802,114 @@ def build_didl_lite(stream_url, station_name, display_title=None, artist=None):
 
     return ET.tostring(root, encoding="unicode", short_empty_elements=False)
 
-def build_set_avtransport_uri_body(playback_url, didl_lite):
+def build_avtransport_action_body(action_name, arguments=None):
     envelope = ET.Element(
         f"{{{SOAP_ENV_NS}}}Envelope",
         {f"{{{SOAP_ENV_NS}}}encodingStyle": "http://schemas.xmlsoap.org/soap/encoding/"}
     )
     body = ET.SubElement(envelope, f"{{{SOAP_ENV_NS}}}Body")
-    action = ET.SubElement(body, f"{{{AVTRANSPORT_NS}}}SetAVTransportURI")
+    action = ET.SubElement(body, f"{{{AVTRANSPORT_NS}}}{action_name}")
 
     ET.SubElement(action, "InstanceID").text = "0"
-    ET.SubElement(action, "CurrentURI").text = clean_xml_text(playback_url)
-    ET.SubElement(action, "CurrentURIMetaData").text = clean_xml_text(didl_lite)
+    for name, value in (arguments or {}).items():
+        ET.SubElement(action, name).text = value
 
     return serialize_xml(envelope)
 
-def build_play_body():
-    envelope = ET.Element(
-        f"{{{SOAP_ENV_NS}}}Envelope",
-        {f"{{{SOAP_ENV_NS}}}encodingStyle": "http://schemas.xmlsoap.org/soap/encoding/"}
-    )
-    body = ET.SubElement(envelope, f"{{{SOAP_ENV_NS}}}Body")
-    action = ET.SubElement(body, f"{{{AVTRANSPORT_NS}}}Play")
-
-    ET.SubElement(action, "InstanceID").text = "0"
-    ET.SubElement(action, "Speed").text = "1"
-
-    return serialize_xml(envelope)
-
-def send_avtransport_uri(control_url, playback_url, station_name, display_title=None, artist=None):
-    didl_lite = build_didl_lite(playback_url, station_name, display_title, artist)
-    soap_body = build_set_avtransport_uri_body(playback_url, didl_lite)
-
+def post_avtransport_action(control_url, action_name, arguments=None):
     headers = {
         'Content-Type': 'text/xml; charset="utf-8"',
-        'SOAPAction': '"urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI"'
+        'SOAPAction': f'"{AVTRANSPORT_NS}#{action_name}"'
     }
+    soap_body = build_avtransport_action_body(action_name, arguments)
+
+    resp = requests.post(control_url, data=soap_body, headers=headers, timeout=5)
+    log_debug(f"{action_name} Response: {resp.status_code} {resp.text}")
+    if resp.status_code >= 400:
+        raise RuntimeError(f"{action_name} failed with HTTP {resp.status_code}")
+
+    return resp
+
+def send_set_avtransport_uri(control_url, playback_url, station_name, display_title=None, artist=None):
+    didl_lite = build_didl_lite(playback_url, station_name, display_title, artist)
 
     log_debug(f"Sending SetAVTransportURI to {control_url} with title: {display_title or station_name}")
-    resp1 = requests.post(control_url, data=soap_body, headers=headers, timeout=5)
-    log_debug(f"SetAVTransportURI Response: {resp1.status_code} {resp1.text}")
-    if resp1.status_code >= 400:
-        raise RuntimeError(f"SetAVTransportURI failed with HTTP {resp1.status_code}")
+    return post_avtransport_action(control_url, "SetAVTransportURI", {
+        "CurrentURI": clean_xml_text(playback_url),
+        "CurrentURIMetaData": clean_xml_text(didl_lite)
+    })
 
-    headers['SOAPAction'] = '"urn:schemas-upnp-org:service:AVTransport:1#Play"'
+def send_play(control_url):
     log_debug(f"Sending Play to {control_url}...")
-    resp2 = requests.post(control_url, data=build_play_body(), headers=headers, timeout=5)
-    log_debug(f"Play Response: {resp2.status_code} {resp2.text}")
-    if resp2.status_code >= 400:
-        raise RuntimeError(f"Play failed with HTTP {resp2.status_code}")
+    return post_avtransport_action(control_url, "Play", {"Speed": "1"})
 
+def send_avtransport_uri(control_url, playback_url, station_name, display_title=None, artist=None):
+    resp1 = send_set_avtransport_uri(control_url, playback_url, station_name, display_title, artist)
+    resp2 = send_play(control_url)
     return resp1, resp2
+
+def get_avr_transport_state(control_url):
+    try:
+        resp = post_avtransport_action(control_url, "GetTransportInfo")
+        root = ET.fromstring(resp.content)
+        node = root.find(".//CurrentTransportState")
+        if node is not None and node.text:
+            return node.text.strip()
+    except Exception as e:
+        log_debug(f"GetTransportInfo failed: {e}")
+    return None
+
+def get_avr_displayed_title(control_url):
+    """Read back the track title the AVR is currently displaying via GetPositionInfo."""
+    try:
+        resp = post_avtransport_action(control_url, "GetPositionInfo")
+        root = ET.fromstring(resp.content)
+        node = root.find(".//TrackMetaData")
+        metadata = node.text if node is not None else None
+        if not metadata or metadata == "NOT_IMPLEMENTED":
+            return None
+
+        didl = ET.fromstring(metadata)
+        title = didl.find(f".//{{{DC_NS}}}title")
+        if title is not None and title.text:
+            return title.text.strip()
+    except Exception as e:
+        log_debug(f"GetPositionInfo failed: {e}")
+    return None
 
 def remember_denon_display_update(playback_url, display_title):
     _LAST_DENON_DISPLAY_UPDATE["url"] = playback_url
     _LAST_DENON_DISPLAY_UPDATE["title"] = display_title
     _LAST_DENON_DISPLAY_UPDATE["at"] = time.time()
+
+def verify_denon_display_update(control_url, expected_title):
+    """
+    Give the AVR a few seconds, then read back what it is displaying.
+    Also recovers playback with Play if the metadata push knocked the
+    transport out of PLAYING. Returns True when the display matches or
+    cannot be verified (old models may not report a track title).
+    """
+    time.sleep(DENON_DISPLAY_METADATA_VERIFY_DELAY_SECONDS)
+
+    state = get_avr_transport_state(control_url)
+    if state and state not in ("PLAYING", "TRANSITIONING"):
+        log_debug(f"AVR transport state is {state} after metadata update, sending Play to recover")
+        try:
+            send_play(control_url)
+        except Exception as e:
+            log_debug(f"Failed to resume playback after metadata update: {e}")
+
+    displayed_title = get_avr_displayed_title(control_url)
+    if displayed_title is None:
+        log_debug("AVR does not report a track title, skipping display verification")
+        return True
+
+    if displayed_title == expected_title:
+        log_debug(f"AVR display verified: {displayed_title}")
+        return True
+
+    log_debug(f"AVR display shows '{displayed_title}' instead of '{expected_title}'")
+    return False
 
 def maybe_update_denon_display(radio_state):
     if not DENON_IP or not DENON_DISPLAY_METADATA or not DENON_DISPLAY_METADATA_REFRESH:
@@ -876,7 +934,7 @@ def maybe_update_denon_display(radio_state):
     ):
         return
 
-    if time.time() - last_update_at < DENON_DISPLAY_METADATA_UPDATE_INTERVAL:
+    if time.time() - last_update_at < DENON_DISPLAY_METADATA_MIN_PUSH_INTERVAL:
         return
 
     if not is_avr_ready_for_radio_metadata_update():
@@ -885,8 +943,21 @@ def maybe_update_denon_display(radio_state):
     try:
         control_url = discover_avtransport_control_url()
         artist, _ = split_now_playing(now_playing)
-        send_avtransport_uri(control_url, playback_url, station_name, display_title, artist)
-        remember_denon_display_update(playback_url, display_title)
+
+        for attempt in range(1, DENON_DISPLAY_METADATA_MAX_PUSH_ATTEMPTS + 1):
+            # Only SetAVTransportURI, no Play: re-sending Play is what used to
+            # restart the stream. verify_denon_display_update recovers playback
+            # in case this model stops on a bare metadata push.
+            send_set_avtransport_uri(control_url, playback_url, station_name, display_title, artist)
+            remember_denon_display_update(playback_url, display_title)
+
+            if verify_denon_display_update(control_url, display_title):
+                return
+
+            log_debug(
+                f"AVR display update attempt {attempt}/{DENON_DISPLAY_METADATA_MAX_PUSH_ATTEMPTS} "
+                f"not confirmed for '{display_title}'"
+            )
     except Exception as e:
         log_debug(f"Failed to update Denon display metadata: {e}")
 
@@ -913,8 +984,8 @@ def schedule_denon_display_update(radio_state):
     thread.start()
 
 def denon_display_metadata_worker():
-    sleep_seconds = DENON_DISPLAY_METADATA_UPDATE_INTERVAL
-    log_debug(f"Started Denon display metadata worker, interval={sleep_seconds}s")
+    sleep_seconds = DENON_DISPLAY_METADATA_POLL_INTERVAL
+    log_debug(f"Started Denon display metadata worker, poll interval={sleep_seconds}s")
 
     while True:
         try:

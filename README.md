@@ -24,8 +24,8 @@ Since Denon/Marantz discontinued vTuner support for older AVR models (e.g., AVR-
    # HOST_IP=192.168.x.y     <-- IP of the machine running this app
    # HOST_PORT=8800          <-- Port mapped in docker-compose
    # DENON_DISPLAY_METADATA=true
-   # DENON_DISPLAY_METADATA_REFRESH=false
-   # DENON_DISPLAY_METADATA_UPDATE_INTERVAL=120
+   # DENON_DISPLAY_METADATA_REFRESH=true
+   # DENON_DISPLAY_METADATA_UPDATE_INTERVAL=30
    # HOME_ASSISTANT_CORS_ORIGINS=*  <-- Or comma-separated HA origins, e.g. http://homeassistant.local:8123
    #
    # For Spotify integration (optional):
@@ -61,4 +61,6 @@ See [home-assistant/README.md](home-assistant/README.md) and
 ## Denon Display Metadata
 When `DENON_DISPLAY_METADATA=true`, the app reads radio metadata when playback starts and sends it as the DLNA title so compatible AVR displays can show artist and song details instead of only the station name. XML for the UPnP request is generated with an XML serializer so special characters in station names, artists, titles, and URLs are escaped correctly.
 
-Optional live refresh is controlled by `DENON_DISPLAY_METADATA_REFRESH`. It is off by default because some Denon/Marantz models briefly restart network playback whenever `SetAVTransportURI` is resent. If you enable it, the app checks the current stream every `DENON_DISPLAY_METADATA_UPDATE_INTERVAL` seconds and refreshes the AVR's UPnP metadata only when the title changes, while the AVR reports that it is powered on and already using a radio/network source. The minimum refresh interval is 30 seconds.
+Live refresh is controlled by `DENON_DISPLAY_METADATA_REFRESH` (on by default). The app checks the current stream every `DENON_DISPLAY_METADATA_UPDATE_INTERVAL` seconds (minimum 10) and pushes new metadata to the AVR **only when the track title actually changes**, while the AVR reports that it is powered on and already using a radio/network source. Pushes are at least 30 seconds apart so the AVR is never hammered.
+
+A refresh sends only `SetAVTransportURI` (no `Play`), which avoids the playback restart older refresh versions caused. A few seconds after each push the app reads back the AVR's displayed title via `GetPositionInfo` to verify it took; if not, it retries once. If the push happened to knock the transport out of `PLAYING`, playback is resumed automatically with a `Play` command. Set `DENON_DISPLAY_METADATA_REFRESH=false` to disable live refresh entirely.
