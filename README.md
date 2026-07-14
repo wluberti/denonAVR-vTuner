@@ -24,7 +24,7 @@ Since Denon/Marantz discontinued vTuner support for older AVR models (e.g., AVR-
    # HOST_IP=192.168.x.y     <-- IP of the machine running this app
    # HOST_PORT=8800          <-- Port mapped in docker-compose
    # DENON_DISPLAY_METADATA=true
-   # DENON_DISPLAY_METADATA_REFRESH=true
+   # DENON_DISPLAY_TRACK_PUSHES=false
    # DENON_DISPLAY_METADATA_UPDATE_INTERVAL=30
    # HOME_ASSISTANT_CORS_ORIGINS=*  <-- Or comma-separated HA origins, e.g. http://homeassistant.local:8123
    #
@@ -59,8 +59,17 @@ See [home-assistant/README.md](home-assistant/README.md) and
 [home-assistant/dashboard.yaml](home-assistant/dashboard.yaml).
 
 ## Denon Display Metadata
-When `DENON_DISPLAY_METADATA=true`, the app reads radio metadata when playback starts and sends it as the DLNA title so compatible AVR displays can show artist and song details instead of only the station name. XML for the UPnP request is generated with an XML serializer so special characters in station names, artists, titles, and URLs are escaped correctly.
+When `DENON_DISPLAY_METADATA=true`, the app sends the station name (or the current track, see below) as the DLNA title when playback starts. XML for the UPnP request is generated with an XML serializer so special characters in station names, artists, titles, and URLs are escaped correctly.
 
-Live refresh is controlled by `DENON_DISPLAY_METADATA_REFRESH` (on by default). The app checks the current stream every `DENON_DISPLAY_METADATA_UPDATE_INTERVAL` seconds (minimum 10) and pushes new metadata to the AVR **only when the track title actually changes**, while the AVR reports that it is powered on and already using a radio/network source. Pushes are at least 30 seconds apart so the AVR is never hammered.
+### The trade-off: live track titles vs. gapless audio
+On the AVRs this project targets there is no way to update the display during DLNA playback without interrupting audio. The display only changes when `SetAVTransportURI` is re-sent, and that always makes the AVR reopen the stream — audible as a short gap. In-stream ICY (Shoutcast) titles are no alternative: tested on an AVR-X4000, the AVR *requests* ICY metadata (`Icy-MetaData: 1`) and strips it correctly, but never shows the titles on its display in DLNA mode.
 
-A refresh sends only `SetAVTransportURI` (no `Play`), which avoids the playback restart older refresh versions caused. A few seconds after each push the app reads back the AVR's displayed title via `GetPositionInfo` to verify it took; if not, it retries once. If the push happened to knock the transport out of `PLAYING`, playback is resumed automatically with a `Play` command. Set `DENON_DISPLAY_METADATA_REFRESH=false` to disable live refresh entirely.
+So there are two modes, chosen with `DENON_DISPLAY_TRACK_PUSHES`:
+
+- `false` (default): no pushes during playback. The display shows the station name, audio is never interrupted.
+- `true`: the app checks the current stream every `DENON_DISPLAY_METADATA_UPDATE_INTERVAL` seconds (minimum 10) and pushes new metadata to the AVR **only when the track title actually changes** (at most once per 30 s), while the AVR reports that it is powered on and using a radio/network source. Each push causes a short audio gap on the song change. A push sends only `SetAVTransportURI` (no `Play`); a few seconds later the displayed title is read back via `GetPositionInfo` to verify it took, retrying once, and playback is resumed with `Play` if the push knocked the transport out of `PLAYING`.
+
+The web UI and Home Assistant card always show the live artist/track regardless of this setting — only the AVR front display is affected.
+
+### Stream proxy and ICY pass-through
+HTTPS station URLs are always routed through the app's `/stream.mp3` proxy because old AVRs cannot do TLS; with `PROXY_ALL_STREAMS=true` plain-HTTP URLs are proxied as well (default off, so direct playback survives app restarts). When a client requests ICY metadata from the proxy (`DENON_ICY_PASSTHROUGH=true`, default), the metadata is passed through untouched together with the `icy-metaint` header; clients that do not ask get a clean stream, since unannounced metadata bytes would play as noise.

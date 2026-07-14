@@ -37,7 +37,13 @@ def get_env_list(name, default=""):
 DENON_IP = os.getenv("DENON_IP")
 DEBUG = get_env_bool("DEBUG")
 DENON_DISPLAY_METADATA = get_env_bool("DENON_DISPLAY_METADATA", True)
-DENON_DISPLAY_METADATA_REFRESH = get_env_bool("DENON_DISPLAY_METADATA_REFRESH", True)
+# Push live track titles to the AVR display over UPnP when the song changes.
+# The only way to update the display of these AVRs during DLNA playback is to
+# re-send SetAVTransportURI, which makes the AVR reopen the stream — audible
+# as a short gap on every song change (confirmed on AVR-X4000; it requests
+# in-stream ICY titles but never displays them in DLNA mode). Off by default:
+# the display then shows the station name and audio is never interrupted.
+DENON_DISPLAY_TRACK_PUSHES = get_env_bool("DENON_DISPLAY_TRACK_PUSHES", False)
 DENON_DISPLAY_METADATA_MIN_POLL_INTERVAL = 10
 DENON_DISPLAY_METADATA_POLL_INTERVAL = max(
     DENON_DISPLAY_METADATA_MIN_POLL_INTERVAL,
@@ -48,6 +54,13 @@ DENON_DISPLAY_METADATA_POLL_INTERVAL = max(
 DENON_DISPLAY_METADATA_MIN_PUSH_INTERVAL = 30
 DENON_DISPLAY_METADATA_VERIFY_DELAY_SECONDS = 5
 DENON_DISPLAY_METADATA_MAX_PUSH_ATTEMPTS = 2
+# Pass ICY (Shoutcast) metadata through the stream proxy when the AVR asks for
+# it (harmless for clients that can use it; the X4000 asks but ignores it).
+DENON_ICY_PASSTHROUGH = get_env_bool("DENON_ICY_PASSTHROUGH", True)
+# Route plain-HTTP streams through the proxy as well (HTTPS always is, since
+# old AVRs can't do TLS). Off by default: direct playback survives app
+# restarts and the proxy adds nothing for the AVR display.
+PROXY_ALL_STREAMS = get_env_bool("PROXY_ALL_STREAMS", False)
 HOME_ASSISTANT_CORS_ORIGINS = get_env_list("HOME_ASSISTANT_CORS_ORIGINS", "*")
 
 # Spotify Configuration
@@ -73,6 +86,7 @@ _DENON_DISPLAY_WORKER_STARTED = False
 ICY_METADATA_READ_TIMEOUT = 6
 ICY_METADATA_MAX_BLOCKS = 4
 ICY_METADATA_READ_CHUNK_SIZE = 16384
+
 
 XML_INVALID_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
 DIDL_NS = "urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"
@@ -142,7 +156,16 @@ def unwrap_proxy_url(url):
     return unquote(url.split("url=", 1)[1])
 
 def get_playback_url(stream_url):
-    if not stream_url or not stream_url.lower().startswith("https://"):
+    if not stream_url:
+        return stream_url
+
+    lowered = stream_url.lower()
+    if "/stream.mp3?url=" in lowered:
+        return stream_url
+
+    if not lowered.startswith("https://") and not (
+        PROXY_ALL_STREAMS and lowered.startswith("http://")
+    ):
         return stream_url
 
     local_ip = os.getenv("HOST_IP")
@@ -157,6 +180,10 @@ def get_playback_url(stream_url):
     return proxy_url
 
 def get_denon_display_title(station_name, now_playing=None):
+    # Without track pushes the display is set once, at playback start; a track
+    # title would freeze there and go stale, so prefer the station name.
+    if not DENON_DISPLAY_TRACK_PUSHES:
+        return station_name or normalize_now_playing(now_playing) or "vTuner Stream"
     return normalize_now_playing(now_playing) or station_name or "vTuner Stream"
 
 def get_current_radio_state():
@@ -486,12 +513,35 @@ def stream_proxy():
 
     try:
         log_debug(f"Streaming proxy requested for: {url}")
-        # Stream the content with ICY metadata request
-        # Stream the content WITHOUT ICY metadata request to avoid interleaved data
-        # headers = {'Icy-MetaData': '1'}
-        # CAUTION: Requesting Icy-MetaData=1 causes the server to insert metadata bytes
-        # into the MP3 stream. The AVR doesn't expect this and plays them as noise (pop/jitter).
-        req = requests.get(url, stream=True, timeout=10)
+
+        # ICY (Shoutcast) metadata pass-through: only when the client (the AVR)
+        # explicitly asks for it with Icy-MetaData: 1, request it upstream and
+        # forward the stream bytes untouched together with the icy-metaint
+        # header, so the client can strip the metadata blocks itself and show
+        # the track title on its display — without any UPnP push and thus
+        # without interrupting audio.
+        # Clients that don't ask get a clean stream: metadata bytes a client
+        # was never told about play as noise (pop/jitter).
+        client_wants_icy = (
+            DENON_ICY_PASSTHROUGH
+            and (request.headers.get('Icy-MetaData') or '').strip() == '1'
+        )
+        upstream_headers = {'Accept-Encoding': 'identity'}
+        if client_wants_icy:
+            upstream_headers['Icy-MetaData'] = '1'
+
+        req = requests.get(url, headers=upstream_headers, stream=True, timeout=10)
+
+        try:
+            icy_metaint = int(req.headers.get('icy-metaint', 0))
+        except (TypeError, ValueError):
+            icy_metaint = 0
+        icy_enabled = client_wants_icy and icy_metaint > 0
+
+        log_debug(
+            f"Proxy client requested ICY: {client_wants_icy}, "
+            f"upstream icy-metaint: {icy_metaint}, pass-through: {icy_enabled}"
+        )
 
         def generate():
             # Increase chunk size to 32KB for better buffering
@@ -500,6 +550,13 @@ def stream_proxy():
 
         # Force audio/mpeg for compatibility
         resp = app.response_class(generate(), mimetype='audio/mpeg')
+
+        if icy_enabled:
+            resp.headers['icy-metaint'] = str(icy_metaint)
+            for icy_header in ('icy-name', 'icy-genre', 'icy-br', 'icy-url'):
+                icy_value = req.headers.get(icy_header)
+                if icy_value:
+                    resp.headers[icy_header] = icy_value
 
         # Add DLNA headers
         # MP3 profile, Streaming mode, Time-seek supported (OP=01) or not?
@@ -912,7 +969,7 @@ def verify_denon_display_update(control_url, expected_title):
     return False
 
 def maybe_update_denon_display(radio_state):
-    if not DENON_IP or not DENON_DISPLAY_METADATA or not DENON_DISPLAY_METADATA_REFRESH:
+    if not DENON_IP or not DENON_DISPLAY_METADATA or not DENON_DISPLAY_TRACK_PUSHES:
         return
 
     now_playing = normalize_now_playing(radio_state.get("now_playing"))
@@ -966,7 +1023,7 @@ def run_denon_display_update(radio_state):
         maybe_update_denon_display(radio_state)
 
 def schedule_denon_display_update(radio_state):
-    if not DENON_IP or not DENON_DISPLAY_METADATA or not DENON_DISPLAY_METADATA_REFRESH:
+    if not DENON_IP or not DENON_DISPLAY_METADATA or not DENON_DISPLAY_TRACK_PUSHES:
         return
 
     if _DENON_DISPLAY_UPDATE_LOCK.locked():
@@ -1009,7 +1066,7 @@ def denon_display_metadata_worker():
 def start_denon_display_metadata_worker():
     global _DENON_DISPLAY_WORKER_STARTED
 
-    if not DENON_IP or not DENON_DISPLAY_METADATA or not DENON_DISPLAY_METADATA_REFRESH:
+    if not DENON_IP or not DENON_DISPLAY_METADATA or not DENON_DISPLAY_TRACK_PUSHES:
         return
 
     with _DENON_DISPLAY_WORKER_LOCK:
@@ -1075,7 +1132,13 @@ def play_url():
         log_debug(f"Using Control URL: {control_url}")
 
         playback_url = get_playback_url(stream_url)
-        metadata = get_stream_metadata(stream_url) if DENON_DISPLAY_METADATA else {}
+        # Reading the current track only matters when it will be pushed to the
+        # display; skipping it also makes starting a station faster.
+        metadata = (
+            get_stream_metadata(stream_url)
+            if DENON_DISPLAY_METADATA and DENON_DISPLAY_TRACK_PUSHES
+            else {}
+        )
         now_playing = normalize_now_playing(metadata.get("now_playing"))
         artist, _ = split_now_playing(now_playing)
         display_title = get_denon_display_title(station_name, now_playing)
