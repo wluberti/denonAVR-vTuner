@@ -12,4 +12,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["gunicorn", "-w", "1", "--threads", "8", "--timeout", "0", "--bind", "0.0.0.0:6000", "app:app"]
+CMD ["gunicorn", "-w", "1", "--threads", "8", "--timeout", "0", "--access-logfile", "-", "--bind", "0.0.0.0:6000", "app:app"]

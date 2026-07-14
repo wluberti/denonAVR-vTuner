@@ -5,7 +5,7 @@ const DENON_VTUNER_DEFAULT_INPUTS = [
   { label: "Spotify", input: "SPOTIFY", icon: "mdi:spotify" },
 ];
 
-const DENON_VTUNER_TILE_VERSION = "0.1.3";
+const DENON_VTUNER_TILE_VERSION = "0.1.4";
 const DENON_VTUNER_RADIO_SOURCES = new Set(["NET", "IRADIO", "NETWORK"]);
 
 function denonVtunerEscape(value) {
@@ -799,6 +799,7 @@ class DenonVtunerTile extends HTMLElement {
       .card-shell {
         display: grid;
         gap: 16px;
+        min-width: 0;
         padding: 16px;
       }
 
@@ -883,6 +884,7 @@ class DenonVtunerTile extends HTMLElement {
       .icon-button {
         align-items: center;
         border-radius: 8px;
+        flex-shrink: 0;
         display: inline-flex;
         height: 40px;
         justify-content: center;
@@ -964,6 +966,7 @@ class DenonVtunerTile extends HTMLElement {
         border-top: 1px solid var(--divider-color);
         display: grid;
         gap: 12px;
+        min-width: 0;
         padding-top: 14px;
       }
 
@@ -979,6 +982,7 @@ class DenonVtunerTile extends HTMLElement {
       .item-list {
         display: grid;
         gap: 8px;
+        min-width: 0;
       }
 
       .item-list.compact {
@@ -989,7 +993,9 @@ class DenonVtunerTile extends HTMLElement {
       .now-playing {
         background: color-mix(in srgb, var(--primary-text-color) 5%, transparent);
         border-radius: 8px;
+        flex-wrap: nowrap;
         gap: 10px;
+        max-width: 100%;
         min-width: 0;
         padding: 8px;
       }
@@ -1002,7 +1008,9 @@ class DenonVtunerTile extends HTMLElement {
         background: color-mix(in srgb, var(--primary-text-color) 8%, transparent);
         border-radius: 7px;
         flex: 0 0 44px;
+        flex-shrink: 0;
         height: 44px;
+        max-width: 44px;
         object-fit: cover;
         overflow: hidden;
         width: 44px;
@@ -1017,13 +1025,16 @@ class DenonVtunerTile extends HTMLElement {
 
       .media-copy {
         display: grid;
-        flex: 1;
+        flex: 1 1 0;
         gap: 2px;
         min-width: 0;
+        overflow: hidden;
       }
 
       .media-copy strong,
       .media-copy span {
+        display: block;
+        min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;

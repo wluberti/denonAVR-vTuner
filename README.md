@@ -3,8 +3,9 @@
 Since Denon/Marantz discontinued vTuner support for older AVR models (e.g., AVR-3808, AVR-4308), the "Internet Radio" function became useless. This project provides a modern web interface to restore radio functionality using your own server as a proxy.
 
 ## Features
+- **vTuner Emulation**: Restores the AVR's native Internet Radio mode (gapless playback with live track titles on the AVR display) by impersonating the discontinued vTuner/radiodenon.com service.
 - **Radio Browser**: Search and play thousands of stations via radio-browser.info.
-- **Favorites**: Save your favorite stations.
+- **Favorites**: Save your favorite stations — served to both the web UI and the AVR's Internet Radio menu.
 - **Spotify Connect**: Browse and play your Spotify playlists directly on the AVR.
 - **Input Control**: Easy switching between TV Audio, STB, Radio, and Spotify.
 - **Radio Resume**: "Radio" button remembers and resumes the last played station.
@@ -78,11 +79,12 @@ The menu served to the AVR contains your **Favorites** (same `favorites.json` as
 
 Setup:
 
-1. The AVR firmware hardcodes `http://*.vtuner.com/...` on **port 80**, so the compose file maps host port 80 to the app.
-2. Make the AVR resolve `*.vtuner.com` to the machine running this app. Either:
-   - use the bundled dnsmasq service: `docker compose --profile dns up -d` (set `DNS_UPSTREAM` in `.env`, e.g. your router), then set the DNS server in the AVR's network setup (manual/static network configuration on the AVR) to this machine's IP; or
-   - if you run Pi-hole/AdGuard: add a local DNS record pointing `radiodenon.vtuner.com` (or wildcard `*.vtuner.com`) to this machine — no AVR changes needed.
-3. On the AVR choose **NET → Internet Radio**. Favorites, search and popular stations come from this app.
+1. The AVR firmware hardcodes the radio service URL on **port 80**, so the compose file maps host port 80 to the app.
+2. Make the AVR resolve the Denon radio service domain to the machine running this app. The **AVR-X4000 generation queries `radiodenon.com`** (which normally redirects to the vTuner backend); older models query `*.vtuner.com` directly. Either:
+   - use the bundled dnsmasq service: `docker compose --profile dns up -d` (set `DNS_UPSTREAM` in `.env`, e.g. your router) — it overrides both `radiodenon.com` and `*.vtuner.com` — then set the DNS server in the AVR's network setup (manual/static network configuration on the AVR) to this machine's IP; or
+   - if you run Pi-hole/AdGuard: add local DNS records pointing `radiodenon.com` **and** `radiodenon.vtuner.com` to this machine — no AVR changes needed. Make sure the AVR actually uses Pi-hole as its DNS server (it does if your router hands out Pi-hole via DHCP).
+3. On the AVR choose **NET → Internet Radio**. The menu (Favorites, Search, Most Popular) now comes from this app.
+4. Verify from any machine on the LAN: `curl -H "Host: radiodenon.com" http://<HOST_IP>/setupapp/Denon/asp/BrowseXml/loginXML.asp?token=0` must return `<EncryptedToken>...</EncryptedToken>`, and `docker compose logs web` shows the AVR's `/setupapp/...` requests once it opens the menu (the AVR is the client, so *it* must resolve the domain — testing with curl from a laptop only proves the app side).
 
 ### Stream proxy and ICY pass-through
 HTTPS station URLs are always routed through the app's `/stream.mp3` proxy because old AVRs cannot do TLS; with `PROXY_ALL_STREAMS=true` plain-HTTP URLs are proxied as well (default off, so direct playback survives app restarts). When a client requests ICY metadata from the proxy (`DENON_ICY_PASSTHROUGH=true`, default), the metadata is passed through untouched together with the `icy-metaint` header; clients that do not ask get a clean stream, since unannounced metadata bytes would play as noise.

@@ -13,10 +13,12 @@ services:
       - .env
     restart: unless-stopped
 
-  # Resolves *.vtuner.com to this host so the AVR's native Internet Radio mode
-  # talks to the app; forwards everything else to DNS_UPSTREAM. Opt-in:
+  # Resolves the Denon radio service domains to this host so the AVR's native
+  # Internet Radio mode talks to the app; forwards everything else to
+  # DNS_UPSTREAM. Opt-in:
   #   docker compose --profile dns up -d
   # Point the AVR's DNS (manual network setup on the AVR) at this host.
+  # The AVR-X4000 queries radiodenon.com; older models use *.vtuner.com.
   vtuner-dns:
     image: 4km3/dnsmasq:2.90-r3
     profiles: ["dns"]
@@ -26,6 +28,7 @@ services:
     command:
       - --no-resolv
       - --log-facility=-
+      - --address=/radiodenon.com/${HOST_IP}
       - --address=/vtuner.com/${HOST_IP}
       - --server=${DNS_UPSTREAM:-1.1.1.1}
     cap_add:
