@@ -3,6 +3,7 @@ import sys
 import requests
 import os
 import socket
+import hashlib
 import html
 import json
 import time
@@ -1632,6 +1633,276 @@ def spotify_current():
     except Exception as e:
         log_debug(f"Error fetching current track: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+# ============ VTUNER SERVICE EMULATION ============
+# Impersonates the discontinued vTuner backend so the AVR's native
+# "Internet Radio" mode works again. In that mode the AVR plays streams with
+# its own player: no UPnP pushes, no audio gaps, and it shows live in-stream
+# ICY track titles on its display by itself.
+#
+# Requires DNS on the AVR to resolve *.vtuner.com to this host, and this app
+# reachable on port 80 (the AVR firmware hardcodes both). The AVR requests
+# paths like /setupapp/Denon/asp/BrowseXml/loginXML.asp and expects vTuner's
+# "ListOfItems" XML. Protocol reference: the YCast project (milaq/YCast).
+
+VTUNER_XML_HEADER = '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>'
+VTUNER_PAGE_SIZE_LIMIT = 100
+RADIO_BROWSER_MIRRORS = [
+    "https://de2.api.radio-browser.info/json",
+    "https://de1.api.radio-browser.info/json",
+]
+
+def vtuner_bogus_parameter(url):
+    # AVRs blindly append '&mac=...&dlang=...' to menu URLs, so every URL
+    # handed to the AVR needs an existing query string to stay parseable.
+    return url + "?vtuner=true"
+
+def vtuner_xml_response(root):
+    body = VTUNER_XML_HEADER + ET.tostring(root, encoding="unicode")
+    return app.response_class(body, mimetype="text/xml")
+
+def vtuner_page(items, total_count=None):
+    root = ET.Element("ListOfItems")
+    ET.SubElement(root, "ItemCount").text = str(
+        len(items) if total_count is None else total_count
+    )
+    for item in items:
+        root.append(item)
+    return vtuner_xml_response(root)
+
+def vtuner_display_item(text):
+    item = ET.Element("Item")
+    ET.SubElement(item, "ItemType").text = "Display"
+    ET.SubElement(item, "Display").text = text
+    return item
+
+def vtuner_display_page(text):
+    return vtuner_page([vtuner_display_item(text)])
+
+def vtuner_dir_item(title, destination, item_count=-1):
+    item = ET.Element("Item")
+    ET.SubElement(item, "ItemType").text = "Dir"
+    ET.SubElement(item, "Title").text = title
+    ET.SubElement(item, "UrlDir").text = vtuner_bogus_parameter(destination)
+    ET.SubElement(item, "UrlDirBackUp").text = vtuner_bogus_parameter(destination)
+    ET.SubElement(item, "DirCount").text = str(item_count)
+    return item
+
+def vtuner_search_item(caption, destination):
+    item = ET.Element("Item")
+    ET.SubElement(item, "ItemType").text = "Search"
+    ET.SubElement(item, "SearchURL").text = vtuner_bogus_parameter(destination)
+    ET.SubElement(item, "SearchURLBackUp").text = vtuner_bogus_parameter(destination)
+    ET.SubElement(item, "SearchCaption").text = caption
+    ET.SubElement(item, "SearchTextbox").text = None
+    ET.SubElement(item, "SearchButtonGo").text = "Search"
+    ET.SubElement(item, "SearchButtonCancel").text = "Cancel"
+    return item
+
+def vtuner_station_item(uid, name, stream_url, description="", genre="",
+                        location="", mime="MP3", bitrate=""):
+    playback_url = get_playback_url(stream_url)
+    if playback_url and playback_url.lower().startswith("https://"):
+        # The AVR cannot do TLS; the proxy normally handles this, but be
+        # explicit in case HOST_IP could not be determined.
+        playback_url = "http://" + playback_url[8:]
+
+    item = ET.Element("Item")
+    ET.SubElement(item, "ItemType").text = "Station"
+    ET.SubElement(item, "StationId").text = uid
+    ET.SubElement(item, "StationName").text = name or "Unknown station"
+    ET.SubElement(item, "StationUrl").text = playback_url
+    ET.SubElement(item, "StationDesc").text = description
+    ET.SubElement(item, "Logo").text = None
+    ET.SubElement(item, "StationFormat").text = genre
+    ET.SubElement(item, "StationLocation").text = location
+    ET.SubElement(item, "StationBandWidth").text = str(bitrate or "")
+    ET.SubElement(item, "StationMime").text = (mime or "MP3").upper()
+    ET.SubElement(item, "Relia").text = "3"
+    ET.SubElement(item, "Bookmark").text = None
+    return item
+
+def vtuner_paged(items, args):
+    """AVRs page lists with startitems/enditems (or start/howmany)."""
+    def first_int(*names):
+        for name in names:
+            value = args.get(name)
+            if value:
+                try:
+                    return int(value)
+                except ValueError:
+                    continue
+        return None
+
+    start = first_int("startitems", "startItems", "start")
+    offset = (start - 1) if start else 0
+    if offset < 0 or offset >= len(items):
+        offset = 0
+
+    end = first_int("enditems", "endItems")
+    if end is None:
+        howmany = first_int("howmany")
+        end = (offset + howmany) if howmany else len(items)
+
+    return items[offset:min(max(end, offset), len(items))]
+
+def vtuner_url(path):
+    return request.host_url.rstrip("/") + path
+
+def favorite_station_id(favorite):
+    return "fav" + hashlib.md5(favorite["url"].encode("utf-8")).hexdigest()[:12]
+
+def favorite_to_vtuner_item(favorite):
+    return vtuner_station_item(
+        uid=favorite_station_id(favorite),
+        name=favorite.get("name"),
+        stream_url=favorite["url"],
+        description=favorite.get("name") or "",
+        bitrate=favorite.get("bitrate") or ""
+    )
+
+def radio_browser_request(path, params=None):
+    last_error = None
+    for mirror in RADIO_BROWSER_MIRRORS:
+        try:
+            resp = requests.get(
+                f"{mirror}/{path}",
+                params=params,
+                headers={"User-Agent": "denonAVR-vTuner/1.0"},
+                timeout=6
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            log_debug(f"radio-browser mirror {mirror} failed: {e}")
+            last_error = e
+    raise last_error
+
+def radio_browser_to_vtuner_item(station):
+    return vtuner_station_item(
+        uid="rb" + station.get("stationuuid", ""),
+        name=station.get("name"),
+        stream_url=station.get("url_resolved") or station.get("url"),
+        description=station.get("name") or "",
+        genre=(station.get("tags") or "").split(",")[0],
+        location=station.get("country") or "",
+        mime=station.get("codec") or "MP3",
+        bitrate=station.get("bitrate") or ""
+    )
+
+def find_vtuner_station_item(station_id):
+    if station_id.startswith("fav"):
+        for favorite in load_favorites():
+            if favorite_station_id(favorite) == station_id:
+                return favorite_to_vtuner_item(favorite)
+        return None
+
+    if station_id.startswith("rb"):
+        stations = radio_browser_request(f"stations/byuuid/{station_id[2:]}")
+        if stations:
+            return radio_browser_to_vtuner_item(stations[0])
+
+    return None
+
+@app.route('/setupapp/<path:subpath>', methods=['GET', 'POST'])
+def vtuner_setupapp(subpath):
+    lowered = subpath.lower()
+    log_debug(f"vTuner request: /setupapp/{subpath} args={dict(request.args)}")
+
+    if request.args.get("token") == "0":
+        return app.response_class(
+            "<EncryptedToken>0000000000000000</EncryptedToken>",
+            mimetype="text/xml"
+        )
+
+    if request.args.get("search") is not None:
+        return vtuner_search()
+
+    if "statxml" in lowered and request.args.get("id"):
+        return vtuner_station_info()
+
+    if "favxml" in lowered:
+        return vtuner_favorites()
+
+    if "loginxml" in lowered or "navxml" in lowered:
+        return vtuner_landing()
+
+    print(f"[vTuner] Unhandled request: /setupapp/{subpath} args={dict(request.args)}",
+          file=sys.stderr)
+    return vtuner_display_page("Not supported")
+
+@app.route('/vtuner/', methods=['GET', 'POST'])
+def vtuner_landing():
+    favorites_count = len(load_favorites())
+    items = [
+        vtuner_dir_item("Favorites", vtuner_url("/vtuner/favorites"), favorites_count),
+        vtuner_search_item("Search stations", vtuner_url("/vtuner/search")),
+        vtuner_dir_item("Most Popular", vtuner_url("/vtuner/popular"), VTUNER_PAGE_SIZE_LIMIT),
+    ]
+    return vtuner_page(items)
+
+@app.route('/vtuner/favorites', methods=['GET', 'POST'])
+def vtuner_favorites():
+    favorites = load_favorites()
+    if not favorites:
+        return vtuner_display_page("No favorites yet")
+
+    items = [favorite_to_vtuner_item(f) for f in vtuner_paged(favorites, request.args)]
+    return vtuner_page(items, total_count=len(favorites))
+
+@app.route('/vtuner/search', methods=['GET', 'POST'])
+def vtuner_search():
+    query = (request.args.get("search") or "").strip()
+    if len(query) < 3:
+        return vtuner_display_page("Search query too short")
+
+    try:
+        stations = radio_browser_request("stations/search", {
+            "name": query,
+            "limit": VTUNER_PAGE_SIZE_LIMIT,
+            "hidebroken": "true",
+            "order": "clickcount",
+            "reverse": "true"
+        })
+    except Exception as e:
+        log_debug(f"vTuner search failed: {e}")
+        return vtuner_display_page("Search failed")
+
+    if not stations:
+        return vtuner_display_page("No stations found")
+
+    items = [radio_browser_to_vtuner_item(s) for s in vtuner_paged(stations, request.args)]
+    return vtuner_page(items, total_count=len(stations))
+
+@app.route('/vtuner/popular', methods=['GET', 'POST'])
+def vtuner_popular():
+    try:
+        stations = radio_browser_request("stations/search", {
+            "limit": VTUNER_PAGE_SIZE_LIMIT,
+            "hidebroken": "true",
+            "order": "clickcount",
+            "reverse": "true"
+        })
+    except Exception as e:
+        log_debug(f"vTuner popular failed: {e}")
+        return vtuner_display_page("Could not load stations")
+
+    items = [radio_browser_to_vtuner_item(s) for s in vtuner_paged(stations, request.args)]
+    return vtuner_page(items, total_count=len(stations))
+
+@app.route('/vtuner/station', methods=['GET', 'POST'])
+def vtuner_station_info():
+    station_id = request.args.get("id") or ""
+    try:
+        item = find_vtuner_station_item(station_id)
+    except Exception as e:
+        log_debug(f"vTuner station lookup failed for '{station_id}': {e}")
+        item = None
+
+    if item is None:
+        return vtuner_display_page("Station not found")
+    return vtuner_page([item])
 
 
 if __name__ == '__main__':

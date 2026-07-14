@@ -71,5 +71,18 @@ So there are two modes, chosen with `DENON_DISPLAY_TRACK_PUSHES`:
 
 The web UI and Home Assistant card always show the live artist/track regardless of this setting — only the AVR front display is affected.
 
+## vTuner Emulation (native Internet Radio — gapless AND live track titles)
+The app impersonates the discontinued vTuner service, so the AVR's built-in **Internet Radio** mode works again. In that mode the AVR streams with its own player: audio is never interrupted by metadata updates and the display shows live track titles from the stream (ICY) by itself — the DLNA trade-off above does not apply.
+
+The menu served to the AVR contains your **Favorites** (same `favorites.json` as the web UI), **Search** and **Most Popular** (both via radio-browser.info). HTTPS stations are automatically routed through the app's stream proxy because the AVR cannot do TLS.
+
+Setup:
+
+1. The AVR firmware hardcodes `http://*.vtuner.com/...` on **port 80**, so the compose file maps host port 80 to the app.
+2. Make the AVR resolve `*.vtuner.com` to the machine running this app. Either:
+   - use the bundled dnsmasq service: `docker compose --profile dns up -d` (set `DNS_UPSTREAM` in `.env`, e.g. your router), then set the DNS server in the AVR's network setup (manual/static network configuration on the AVR) to this machine's IP; or
+   - if you run Pi-hole/AdGuard: add a local DNS record pointing `radiodenon.vtuner.com` (or wildcard `*.vtuner.com`) to this machine — no AVR changes needed.
+3. On the AVR choose **NET → Internet Radio**. Favorites, search and popular stations come from this app.
+
 ### Stream proxy and ICY pass-through
 HTTPS station URLs are always routed through the app's `/stream.mp3` proxy because old AVRs cannot do TLS; with `PROXY_ALL_STREAMS=true` plain-HTTP URLs are proxied as well (default off, so direct playback survives app restarts). When a client requests ICY metadata from the proxy (`DENON_ICY_PASSTHROUGH=true`, default), the metadata is passed through untouched together with the `icy-metaint` header; clients that do not ask get a clean stream, since unannounced metadata bytes would play as noise.
