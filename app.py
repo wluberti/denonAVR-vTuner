@@ -881,7 +881,22 @@ def post_avtransport_action(control_url, action_name, arguments=None):
     }
     soap_body = build_avtransport_action_body(action_name, arguments)
 
-    resp = requests.post(control_url, data=soap_body, headers=headers, timeout=5)
+    # The AVR's UPnP server occasionally resets the first connection
+    # (ConnectionResetError 104), e.g. right after an input switch or when it
+    # is waking its network stack — one retry is enough in practice.
+    last_error = None
+    for attempt in range(2):
+        if attempt:
+            time.sleep(1)
+        try:
+            resp = requests.post(control_url, data=soap_body, headers=headers, timeout=5)
+            break
+        except requests.exceptions.ConnectionError as e:
+            log_debug(f"{action_name} connection error (attempt {attempt + 1}): {e}")
+            last_error = e
+    else:
+        raise last_error
+
     log_debug(f"{action_name} Response: {resp.status_code} {resp.text}")
     if resp.status_code >= 400:
         raise RuntimeError(f"{action_name} failed with HTTP {resp.status_code}")
